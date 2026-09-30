@@ -1167,6 +1167,7 @@ end
 local Players=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local RS=game:GetService("RunService")
+local Tween=game:GetService("TweenService")
 local player=Players.LocalPlayer
 if _G.__LTF_HUB_V6 then _G.__LTF_HUB_V6.destroy() end
 local connections={}
@@ -1197,35 +1198,87 @@ local function make(class,props,parent)
     for k,v in pairs(props) do o[k]=v end
     o.Parent=parent; return o
 end
+-- Original self-contained design; Fluent/Luna examples used as visual references.
 local bg=Color3.fromRGB(18,22,32)
 local card=Color3.fromRGB(30,36,49)
 local accent=Color3.fromRGB(77,210,174)
 local white=Color3.fromRGB(232,238,246)
 local muted=Color3.fromRGB(152,166,185)
+local bg=Color3.fromRGB(18,18,23)
+local card=Color3.fromRGB(29,29,37)
+local accent=Color3.fromRGB(167,139,250)
+local white=Color3.fromRGB(241,239,249)
+local muted=Color3.fromRGB(148,146,165)
+local green=Color3.fromRGB(99,213,172)
+local red=Color3.fromRGB(242,127,145)
 local function round(o,r) make("UICorner",{CornerRadius=UDim.new(0,r or 10)},o) end
 local root=make("Frame",{Size=UDim2.fromOffset(700,500),Position=UDim2.fromScale(.5,.5),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=bg,BorderSizePixel=0},gui); round(root,14)
 local scale=make("UIScale",{Scale=1},root)
 local function resize()
     local camera=workspace.CurrentCamera
     if camera then local v=camera.ViewportSize; scale.Scale=math.min(1,(v.X-20)/700,(v.Y-30)/500) end
+local function stroke(o,color,transparency)
+    return make("UIStroke",{Color=color or Color3.fromRGB(66,63,80),Transparency=transparency or .55,Thickness=1},o)
 end
 resize()
 local header=make("TextLabel",{Size=UDim2.new(1,-130,0,48),Position=UDim2.fromOffset(20,0),BackgroundTransparency=1,Text="Đăng Răng To HUB",TextColor3=accent,TextSize=22,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},root)
+local activeTweens={}
+local function animate(o,props)
+    if not alive or not o.Parent then return end
+    if activeTweens[o] then activeTweens[o]:Cancel() end
+    local t=Tween:Create(o,TweenInfo.new(.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),props)
+    activeTweens[o]=t; t:Play()
+end
+local root=make("Frame",{Size=UDim2.fromOffset(800,570),Position=UDim2.fromScale(.5,.5),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=bg,BorderSizePixel=0},gui); round(root,16); stroke(root,accent,.65)
+local scale=make("UIScale",{Scale=1},root)
+local top=make("Frame",{Size=UDim2.new(1,0,0,65),BackgroundColor3=Color3.fromRGB(23,22,30),BorderSizePixel=0},root); round(top,16)
+make("Frame",{Size=UDim2.new(1,-32,0,1),Position=UDim2.fromOffset(16,64),BackgroundColor3=Color3.fromRGB(55,51,70),BorderSizePixel=0},root)
+local emblem=make("TextLabel",{Size=UDim2.fromOffset(38,38),Position=UDim2.fromOffset(18,13),BackgroundColor3=Color3.fromRGB(53,42,78),Text="ĐR",TextColor3=accent,Font=Enum.Font.GothamBold,TextSize=17},root); round(emblem,11)
+local header=make("TextLabel",{Size=UDim2.new(1,-176,0,28),Position=UDim2.fromOffset(68,10),BackgroundTransparency=1,Text="Đăng Răng To HUB",TextColor3=white,TextSize=20,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},root)
+local subtitle=make("TextLabel",{Size=UDim2.new(1,-176,0,18),Position=UDim2.fromOffset(69,37),BackgroundTransparency=1,Text="LOOT TO FORGE  /  V6",TextColor3=muted,TextSize=10,Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left},root)
 local function button(text,parent,size,pos)
     local o=make("TextButton",{Size=size or UDim2.new(1,0,0,38),Position=pos or UDim2.new(),Text=text,TextColor3=white,BackgroundColor3=card,BorderSizePixel=0,Font=Enum.Font.Gotham,TextSize=14,AutoButtonColor=true},parent); round(o); return o
+    local o=make("TextButton",{Size=size or UDim2.new(1,0,0,44),Position=pos or UDim2.new(),Text=text,TextColor3=white,BackgroundColor3=card,BorderSizePixel=0,Font=Enum.Font.GothamMedium,TextSize=13,AutoButtonColor=false,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},parent)
+    round(o,9); stroke(o)
+    make("UIPadding",{PaddingLeft=UDim.new(0,14),PaddingRight=UDim.new(0,14)},o)
+    connect(o.MouseEnter,function() animate(o,{BackgroundColor3=Color3.fromRGB(43,40,54)}) end)
+    connect(o.MouseLeave,function() animate(o,{BackgroundColor3=card}) end)
+    return o
 end
 local hide=button("Ẩn",root,UDim2.fromOffset(50,30),UDim2.new(1,-114,0,9))
 local close=button("×",root,UDim2.fromOffset(40,30),UDim2.new(1,-58,0,9))
 local open=button("ĐR",gui,UDim2.fromOffset(48,48),UDim2.fromOffset(16,110)); open.Visible=false
+local hide=button("−",root,UDim2.fromOffset(34,32),UDim2.new(1,-91,0,16)); hide.TextXAlignment=Enum.TextXAlignment.Center
+local close=button("×",root,UDim2.fromOffset(34,32),UDim2.new(1,-49,0,16)); close.TextXAlignment=Enum.TextXAlignment.Center; close.TextColor3=red
+local open=button("ĐR",gui,UDim2.fromOffset(50,50),UDim2.fromOffset(16,110)); open.Visible=false; open.TextXAlignment=Enum.TextXAlignment.Center; open.TextColor3=accent; stroke(open,accent,.2)
 connect(hide.Activated,function() root.Visible=false; open.Visible=true end)
 connect(open.Activated,function() root.Visible=true; open.Visible=false end)
 local sidebar=make("Frame",{Size=UDim2.fromOffset(155,380),Position=UDim2.fromOffset(15,60),BackgroundTransparency=1},root)
 make("UIListLayout",{Padding=UDim.new(0,8)},sidebar)
 local content=make("Frame",{Size=UDim2.new(1,-195,1,-122),Position=UDim2.fromOffset(180,60),BackgroundTransparency=1},root)
 local footer=make("TextLabel",{Size=UDim2.new(1,-30,0,45),Position=UDim2.new(0,15,1,-52),BackgroundColor3=card,Text=loading,TextColor3=muted,TextSize=12,Font=Enum.Font.Gotham,TextWrapped=true},root); round(footer)
+local sidebar=make("ScrollingFrame",{Size=UDim2.fromOffset(166,380),Position=UDim2.fromOffset(14,86),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=0,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y},root)
+make("UIListLayout",{Padding=UDim.new(0,7)},sidebar)
+local sideCaption=make("TextLabel",{Size=UDim2.new(1,0,0,18),BackgroundTransparency=1,Text="KHÔNG GIAN LÀM VIỆC",TextColor3=muted,TextSize=9,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},sidebar)
+local content=make("Frame",{Size=UDim2.new(1,-218,1,-155),Position=UDim2.fromOffset(200,86),BackgroundTransparency=1},root)
+local pageTitle=make("TextLabel",{Size=UDim2.new(1,0,0,31),BackgroundTransparency=1,Text="Tổng quan",TextColor3=white,TextSize=23,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},content)
+local pageHost=make("Frame",{Size=UDim2.new(1,0,1,-43),Position=UDim2.fromOffset(0,43),BackgroundTransparency=1},content)
+local footer=make("TextLabel",{Size=UDim2.new(1,-65,0,45),Position=UDim2.new(0,45,1,-54),BackgroundTransparency=1,Text=loading,TextColor3=muted,TextSize=11,Font=Enum.Font.Gotham,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},root)
+local connectionDot=make("Frame",{Size=UDim2.fromOffset(8,8),Position=UDim2.new(0,25,1,-35),BackgroundColor3=accent,BorderSizePixel=0},root); round(connectionDot,8)
+make("Frame",{Size=UDim2.new(1,-32,0,1),Position=UDim2.new(0,16,1,-62),BackgroundColor3=Color3.fromRGB(55,51,70),BorderSizePixel=0},root)
 local pages={}
 local controls={}
 local selected
+local symbols={"◈","⚔","◇","♜","↗","☺"}
+local function selectPage(p,title)
+    selected=p; pageTitle.Text=title
+    for _,entry in ipairs(pages) do
+        local on=entry.p==p
+        entry.p.Visible=on; entry.nav.TextColor3=on and accent or muted
+        entry.nav.BackgroundColor3=on and Color3.fromRGB(47,38,65) or bg
+        entry.line.Visible=on
+    end
+end
 local function page(title)
     local p=make("ScrollingFrame",{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false},content)
     make("UIListLayout",{Padding=UDim.new(0,8)},p)
@@ -1237,11 +1290,43 @@ local function page(title)
     end)
     pages[#pages+1]={p=p,nav=nav}
     if not selected then selected=p; p.Visible=true; nav.TextColor3=accent end
+    local p=make("ScrollingFrame",{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false},pageHost)
+    make("UIListLayout",{Padding=UDim.new(0,9)},p)
+    make("UIPadding",{PaddingRight=UDim.new(0,8),PaddingBottom=UDim.new(0,12)},p)
+    local nav=make("TextButton",{Size=UDim2.new(1,0,0,42),BackgroundColor3=bg,BorderSizePixel=0,Text=(symbols[#pages+1] or "•").."   "..title,TextColor3=muted,TextSize=13,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false,TextTruncate=Enum.TextTruncate.AtEnd},sidebar); round(nav,8)
+    make("UIPadding",{PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,6)},nav)
+    local line=make("Frame",{Size=UDim2.fromOffset(3,20),Position=UDim2.new(0,0,.5,-10),BackgroundColor3=accent,BorderSizePixel=0,Visible=false},nav); round(line,3)
+    pages[#pages+1]={p=p,nav=nav,line=line,title=title}
+    connect(nav.Activated,function() selectPage(p,title) end)
+    if not selected then selectPage(p,title) end
     return p
 end
 local function label(p,text)
     return make("TextLabel",{Size=UDim2.new(1,0,0,54),BackgroundTransparency=1,Text=text,TextColor3=muted,TextSize=13,Font=Enum.Font.Gotham,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},p)
+    local o=make("TextLabel",{Size=UDim2.new(1,0,0,72),BackgroundColor3=Color3.fromRGB(36,30,48),BorderSizePixel=0,AutomaticSize=Enum.AutomaticSize.Y,Text=text,TextColor3=Color3.fromRGB(193,183,214),TextSize=12,Font=Enum.Font.Gotham,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},p); round(o,10)
+    make("UIPadding",{PaddingLeft=UDim.new(0,14),PaddingRight=UDim.new(0,14),PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10)},o)
+    return o
 end
+local function section(p,title)
+    make("TextLabel",{Size=UDim2.new(1,0,0,26),BackgroundTransparency=1,Text=title,TextColor3=muted,TextSize=10,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},p)
+end
+local lastViewport
+local function resize()
+    local camera=workspace.CurrentCamera
+    if not camera then return end
+    local v=camera.ViewportSize
+    if lastViewport==v then return end
+    lastViewport=v
+    local w=math.min(800,math.max(300,v.X-24)); local height=math.min(570,math.max(280,v.Y-24))
+    local narrow=w<570; local side=narrow and 115 or 166
+    root.Size=UDim2.fromOffset(w,height); scale.Scale=math.min(1,(v.X-12)/w,(v.Y-12)/height)
+    sidebar.Size=UDim2.new(0,side,1,-163)
+    content.Position=UDim2.fromOffset(side+32,86); content.Size=UDim2.new(1,-side-50,1,-155)
+    header.TextSize=narrow and 15 or 20; pageTitle.TextSize=narrow and 19 or 23
+    sideCaption.Text=narrow and "DANH MỤC" or "KHÔNG GIAN LÀM VIỆC"
+    for _,entry in ipairs(pages) do entry.nav.TextSize=narrow and 11 or 13 end
+end
+resize()
 local messageUntil=0
 local function inform(text) loading=text; footer.Text=text; messageUntil=os.clock()+4 end
 local function call(name,...)
@@ -1253,6 +1338,12 @@ local function toggle(p,title,key)
     local b=button(title,p)
     controls[#controls+1]={button=b,title=title,key=key}
     connect(b.Activated,function()
+    local row=make("TextButton",{Size=UDim2.new(1,0,0,52),BackgroundColor3=card,BorderSizePixel=0,Text="",AutoButtonColor=false},p); round(row,10); stroke(row)
+    make("TextLabel",{Size=UDim2.new(1,-87,1,0),Position=UDim2.fromOffset(14,0),BackgroundTransparency=1,Text=title,TextColor3=white,TextSize=12,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},row)
+    local track=make("Frame",{Size=UDim2.fromOffset(38,22),Position=UDim2.new(1,-53,.5,-11),BackgroundColor3=Color3.fromRGB(59,58,70),BorderSizePixel=0},row); round(track,20)
+    local knob=make("Frame",{Size=UDim2.fromOffset(16,16),Position=UDim2.fromOffset(3,3),BackgroundColor3=Color3.fromRGB(168,165,183),BorderSizePixel=0},track); round(knob,16)
+    controls[#controls+1]={button=row,title=title,key=key,track=track,knob=knob,last=nil}
+    connect(row.Activated,function()
         if not api then inform("Chờ bộ xử lý tải xong"); return end
         api.set(key,not api.CONFIG[key])
     end)
@@ -1261,6 +1352,9 @@ local function input(p,title,key,default,min,max)
     local row=make("Frame",{Size=UDim2.new(1,0,0,40),BackgroundColor3=card,BorderSizePixel=0},p); round(row)
     make("TextLabel",{Size=UDim2.new(.7,-15,1,0),Position=UDim2.fromOffset(12,0),BackgroundTransparency=1,Text=title,TextColor3=white,TextSize=13,Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left},row)
     local box=make("TextBox",{Size=UDim2.new(.3,-10,1,-8),Position=UDim2.new(.7,0,0,4),BackgroundColor3=bg,Text=tostring(default),TextColor3=accent,TextSize=14,Font=Enum.Font.Gotham,ClearTextOnFocus=false},row); round(box,6)
+    local row=make("Frame",{Size=UDim2.new(1,0,0,54),BackgroundColor3=card,BorderSizePixel=0},p); round(row,10); stroke(row)
+    make("TextLabel",{Size=UDim2.new(1,-99,1,0),Position=UDim2.fromOffset(14,0),BackgroundTransparency=1,Text=title,TextColor3=white,TextSize=12,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},row)
+    local box=make("TextBox",{Size=UDim2.fromOffset(66,30),Position=UDim2.new(1,-80,.5,-15),BackgroundColor3=bg,Text=tostring(default),TextColor3=accent,TextSize=13,Font=Enum.Font.GothamBold,ClearTextOnFocus=false},row); round(box,7); stroke(box,accent,.65)
     connect(box.FocusLost,function()
         if not api then box.Text=tostring(default); inform("Chờ bộ xử lý"); return end
         local n=tonumber(box.Text)
@@ -1268,23 +1362,46 @@ local function input(p,title,key,default,min,max)
         n=math.clamp(math.floor(n),min,max); box.Text=tostring(n); api.set(key,n)
     end)
 end
+local metricValues={}
+local function metrics(p)
+    local row=make("Frame",{Size=UDim2.new(1,0,0,86),BackgroundTransparency=1},p)
+    for i,title in ipairs({"LEVEL","REBIRTH","COINS"}) do
+        local tile=make("Frame",{Size=UDim2.new(1/3,-6,1,0),Position=UDim2.new((i-1)/3,0,0,0),BackgroundColor3=card,BorderSizePixel=0},row); round(tile,11); stroke(tile)
+        make("TextLabel",{Size=UDim2.new(1,-18,0,16),Position=UDim2.fromOffset(10,12),BackgroundTransparency=1,Text=title,TextColor3=muted,TextSize=9,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},tile)
+        metricValues[i]=make("TextLabel",{Size=UDim2.new(1,-18,0,31),Position=UDim2.fromOffset(10,36),BackgroundTransparency=1,Text="—",TextColor3=i==3 and green or white,TextSize=20,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},tile)
+    end
+end
+local function compact(n)
+    n=tonumber(n) or 0
+    for _,v in ipairs({{1e12,"T"},{1e9,"B"},{1e6,"M"},{1e3,"K"}}) do if math.abs(n)>=v[1] then return string.format("%.1f%s",n/v[1],v[2]) end end
+    return tostring(math.floor(n))
+end
 local general=page("Tổng quan")
+metrics(general)
+section(general,"ĐIỀU KHIỂN")
 label(general,"Bật Farm màn, Tháp hoặc Luyện sẽ tự bật Auto tổng. Tác vụ chạy lần lượt; nút thủ công chỉ nhận khi bộ xử lý rảnh.")
 toggle(general,"AUTO TỔNG","auto")
 local stop=button("DỪNG & TẮT TOÀN BỘ",general)
+local stop=button("■  Dừng tất cả",general); stop.TextColor3=red; stop.BackgroundColor3=Color3.fromRGB(50,29,37)
 connect(stop.Activated,function() if api then api.disableAll() end; resetPlayer(); inform("Đã yêu cầu dừng") end)
+section(general,"HOẠT ĐỘNG GẦN ĐÂY")
 local status=label(general,""); status.Size=UDim2.new(1,0,0,180)
+local status=label(general,""); status.Size=UDim2.new(1,0,0,128)
 local refresh=button("Làm mới dữ liệu",general); connect(refresh.Activated,function() call("refresh") end)
 local farm=page("Farm màn")
 label(farm,"Dọn màn → nhặt drop → back → quay lại cùng màn. Khi túi đầy hoặc nhặt bị từ chối, trạng thái sẽ báo số drop còn lại.")
+section(farm,"VÒNG FARM")
 toggle(farm,"Farm màn liên tục","farm")
 input(farm,"Màn (0 = màn đã vượt sâu nhất)","stage",0,0,27)
 local once=button("Farm một lượt",farm); connect(once.Activated,function() call("stageRun") end)
+section(farm,"LUYỆN SỨC MẠNH")
 toggle(farm,"Luyện khi không farm màn","train")
 input(farm,"Thời gian luyện (giây)","trainSecs",20,5,120)
 local train=button("Luyện một lượt",farm); connect(train.Activated,function() call("trainPass",api and api.CONFIG.trainSecs or 20) end)
 local gear=page("Trang bị")
+section(gear,"TỰ ĐỘNG TRANG BỊ")
 for _,v in ipairs({{"Tự rèn","forge"},{"Rèn xen kẽ giáp","forgeArmor"},{"Mặc đồ tốt nhất","equip"},{"Bán đồ yếu","sell"},{"Tự cường hóa","enchant"}}) do toggle(gear,v[1],v[2]) end
+section(gear,"THAO TÁC NHANH")
 for _,v in ipairs({{"Rèn ngay","forgePass"},{"Mặc ngay","equipPass"},{"Bán ngay","sellPass"},{"Cường hóa ngay","enchantPass"}}) do local b=button(v[1],gear); local action=v[2]; connect(b.Activated,function() call(action) end) end
 local element=button("Nguyên tố: Fire",gear)
 connect(element.Activated,function()
@@ -1299,10 +1416,12 @@ toggle(tower,"Nhận vé hằng ngày","dailyTicket")
 input(tower,"Số vé giữ lại","towerKeep",0,0,999)
 local towerOnce=button("Chạy / tiếp tục một lượt tháp",tower); connect(towerOnce.Activated,function() call("towerRun") end)
 local progress=page("Phát triển")
+section(progress,"NÂNG CẤP & PHẦN THƯỞNG")
 for _,v in ipairs({{"Nâng cấp","upgrade"},{"Ưu tiên túi quặng","orePackFirst"},{"Nâng túi quặng","upgOrePack"},{"Nâng Train","upgTrain"},{"Nâng Luck","upgLuck"},{"Nhận Index","index"},{"Tái sinh","rebirth"},{"Quay / chọn chủng tộc","race"},{"Chống AFK","antiAfk"}}) do toggle(progress,v[1],v[2]) end
 input(progress,"Coins giữ lại","coinKeep",0,0,1000000000000)
 for _,v in ipairs({{"Nâng cấp ngay","upgradePass"},{"Nhận Index ngay","indexPass"},{"Tái sinh ngay","rebirthPass"},{"Chủng tộc ngay","racePass"}}) do local b=button(v[1],progress); local action=v[2]; connect(b.Activated,function() call(action) end) end
 local p=page("Người chơi")
+section(p,"DI CHUYỂN")
 local jb=button("Nhảy vô hạn: TẮT",p); connect(jb.Activated,function() jump=not jump; jb.Text="Nhảy vô hạn: "..(jump and "BẬT" or "TẮT") end)
 local nb=button("Xuyên tường: TẮT",p); connect(nb.Activated,function() noclip=not noclip; if not noclip then restoreCollision() end end)
 local sp=make("TextBox",{Size=UDim2.new(1,0,0,40),BackgroundColor3=card,Text="16",PlaceholderText="Tốc độ chạy",TextColor3=white,Font=Enum.Font.Gotham,TextSize=14,ClearTextOnFocus=false},p); round(sp)
@@ -1344,10 +1463,16 @@ local function destroy()
     if api then api.shutdown() end
     resetPlayer()
     for _,c in ipairs(connections) do c:Disconnect() end
+    for _,t in pairs(activeTweens) do t:Cancel() end
     gui:Destroy()
 end
 _G.__LTF_HUB_V6={destroy=destroy}
+lastViewport=nil
+resize()
 connect(close.Activated,destroy)
+connect(UIS.InputBegan,function(i,processed)
+    if not processed and i.KeyCode==Enum.KeyCode.RightControl then root.Visible=not root.Visible; open.Visible=not root.Visible end
+end)
 task.spawn(function()
     local ok,result=pcall(function()
         local old=_G.__LOOTTOFORGE_DBG
@@ -1366,11 +1491,19 @@ task.spawn(function()
                 local on=api.CONFIG[control.key]
                 control.button.Text=control.title.."  ·  "..(on and "BẬT" or "TẮT")
                 control.button.TextColor3=on and accent or white
+                if control.last~=on then
+                    control.last=on
+                    animate(control.track,{BackgroundColor3=on and accent or Color3.fromRGB(59,58,70)})
+                    animate(control.knob,{Position=UDim2.fromOffset(on and 19 or 3,3),BackgroundColor3=on and white or Color3.fromRGB(168,165,183)})
+                end
             end
             element.Text="Nguyên tố: "..api.CONFIG.element
             local s=api.STATE
+            connectionDot.BackgroundColor3=s.busy and green or accent
+            metricValues[1].Text=compact(s.level); metricValues[2].Text=compact(s.rebirth); metricValues[3].Text=compact(s.coin)
             footer.Text=os.clock()<messageUntil and loading or ((s.busy and "ĐANG CHẠY · " or "SẴN SÀNG · ")..s.phase.."\n"..s.note)
             status.Text=string.format("Level %s  •  Rebirth %s  •  Coins %s\nMàn %s  •  Quặng %s  •  Vé %s\nLượt farm %s  •  Lượt thoát tháp %s\n%s\n%s",s.level,s.rebirth,s.coin,s.stage,s.ore,s.tickets,s.runs,s.towerRuns,s.lastRun,s.lastTower)
+            status.Text=string.format("Màn %s   •   Quặng %s   •   Vé %s\nFarm: %s lượt   /   Tháp: %s lượt thoát\n%s\n%s",s.stage,s.ore,s.tickets,s.runs,s.towerRuns,s.lastRun,s.lastTower)
         else footer.Text=loading end
         jb.Text="Nhảy vô hạn: "..(jump and "BẬT" or "TẮT")
         nb.Text="Xuyên tường: "..(noclip and "BẬT" or "TẮT")
