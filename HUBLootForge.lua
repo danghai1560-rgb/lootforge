@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7-LUNA"
+local BUILD="DRT-7.1-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -1316,13 +1316,18 @@ local function destroy()
     if destroyLuna then pcall(destroyLuna,Luna) end
 end
 _G.__LTF_HUB_V6={destroy=destroy}
-bootText.Text="Đăng Răng To HUB · V7 LUNA\nĐang tải giao diện Luna…"
+bootText.Text="Đăng Răng To HUB · V7.1 LUNA\nĐang tải giao diện Luna…"
 local LUNA_URL="https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/f714cba7b040b5100ad17cec1a4e5dc27c1f02a3/source.lua"
 local previousConfirm
 local env=type(getgenv)=="function" and getgenv() or _G
 previousConfirm=env.ConfirmLuna; env.ConfirmLuna=true
 local loaded,result=pcall(function()
     local source=game:HttpGet(LUNA_URL)
+    -- This Hub uses session settings only. Luna calls SetFolder for every tab,
+    -- even without a config tab; skip that filesystem initialization entirely.
+    local configCount
+    source,configCount=source:gsub("\n([ \t]*)SetFolder%(%)","\n%1-- DRT: disk config initialization disabled",1)
+    if configCount~=1 then error("Luna config adapter không khớp phiên bản",0) end
     -- Track service connections in this pinned Luna revision so reloading the
     -- Hub also disconnects the library's keyboard and drag listeners.
     source=source:gsub("([%a_][%w_%.]*)%:Connect%(","OwnedLunaConnect(%1,")
@@ -1362,7 +1367,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7",
+    Subtitle="+1 Loot To Forge · V7.1",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
