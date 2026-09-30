@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.1-LUNA"
+local BUILD="DRT-7.2-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -49,7 +49,7 @@ _G.__LOOTTOFORGE = GEN
 
 local CONFIG = {
     pickupMode = "Nhanh",
-    pickupFallback = false,
+    pickupFallback = true,
     pickupTimeout = 12,
     backTimeout = 5,
     runGap = 0.15,
@@ -476,23 +476,34 @@ local function dropPosition(o)
     return nil
 end
 local function stageDrops()
-    -- OreCache is the game's drop container. Do not filter by stage Z: drops
-    -- can be parented below folders or spawn outside the guessed stage position.
     local cache=Workspace:FindFirstChild("OreCache")
     if not cache then return {} end
-    local result={}
-    for _,o in ipairs(cache:GetDescendants()) do
-        if o:IsA("ProximityPrompt") and o.Enabled then
-            local pos=dropPosition(o)
-            if pos then result[#result+1]={object=o,prompt=o,pos=pos} end
+    local result,owners={},{}
+    for _,pp in ipairs(cache:GetDescendants()) do
+        if pp:IsA("ProximityPrompt") then
+            local owner=pp:FindFirstAncestorOfClass("Model")
+            if owner and not owner:IsDescendantOf(cache) then owner=nil end
+            if not owner then
+                local parent=pp.Parent
+                while parent and parent~=cache do
+                    if parent:IsA("BasePart") then owner=parent; break end
+                    parent=parent.Parent
+                end
+            end
+            owner=owner or pp
+            local pos=dropPosition(pp)
+            if pos and not owners[owner] then
+                owners[owner]=true
+                -- Disabled prompts remain drops until the item actually leaves
+                -- OreCache. Enabled=false alone is not pickup confirmation.
+                result[#result+1]={object=owner,prompt=pp,pos=pos}
+            end
         end
     end
-    if #result==0 then
-        for _,o in ipairs(cache:GetChildren()) do
-            if not o:FindFirstChildWhichIsA("ProximityPrompt",true) then
-                local pos=dropPosition(o)
-                if pos then result[#result+1]={object=o,pos=pos} end
-            end
+    for _,o in ipairs(cache:GetChildren()) do
+        if not o:FindFirstChildWhichIsA("ProximityPrompt",true) then
+            local pos=dropPosition(o)
+            if pos then result[#result+1]={object=o,pos=pos} end
         end
     end
     return result
@@ -500,18 +511,20 @@ end
 local function pickupNear(drop)
     checkpoint()
     if not drop.object.Parent then return end
-    pin(drop.pos+Vector3.new(0,1.5,0)); pause(0.12)
+    pin(drop.pos+Vector3.new(0,1.5,0)); pause(0.2)
     if drop.prompt and drop.prompt.Parent and drop.prompt.Enabled then
         local pp=drop.prompt
-        if type(fireproximityprompt)=="function" then
-            local ok,err=pcall(function() fireproximityprompt(pp) end)
-            if not ok then error("Pickup failed: "..tostring(err),0) end
-        else
-            local begun,err=pcall(function() pp:InputHoldBegin() end)
-            if not begun then error(tostring(err),0) end
+        local begun,err=pcall(function() pp:InputHoldBegin() end)
+        if begun then
             local ok,waitError=pcall(function() pause(math.clamp(tonumber(pp.HoldDuration) or 0,0,10)+0.05) end)
             pcall(function() pp:InputHoldEnd() end)
             if not ok then error(waitError,0) end
+        end
+        if pp.Parent and pp.Enabled and type(fireproximityprompt)=="function" then
+            local ok,fireError=pcall(function() fireproximityprompt(pp) end)
+            if not ok then error("Pickup failed: "..tostring(fireError),0) end
+        elseif not begun and type(fireproximityprompt)~="function" then
+            error("Không kích hoạt được prompt: "..tostring(err),0)
         end
     end
     pause(0.12)
@@ -540,25 +553,27 @@ local function collectDrops()
     local emptySince=nil
     local seen=false
     local previousSet={}
+    local confirmedSet={}
+    local confirmed=0
     local fallback=false
     while os.clock()-started<CONFIG.pickupTimeout do
         checkpoint()
         local drops=stageDrops()
-        local changed=false
         local currentSet={}
-        for _,drop in ipairs(drops) do
-            currentSet[drop.object]=true
-            if not previousSet[drop.object] then changed=true end
+        for _,drop in ipairs(drops) do currentSet[drop.object]=true end
+        for object in pairs(previousSet) do
+            if not currentSet[object] and not confirmedSet[object] then
+                confirmedSet[object]=true; confirmed=confirmed+1; lastProgress=os.clock()
+            end
         end
-        for object in pairs(previousSet) do if not currentSet[object] then changed=true end end
-        if changed then lastProgress=os.clock() end
         previousSet=currentSet
         if #drops==0 then
             emptySince=emptySince or os.clock()
-            if (seen and os.clock()-emptySince>=.4) or (not seen and os.clock()-started>=4) then break end
+            if seen and confirmed>0 and os.clock()-emptySince>=.5 then break end
         else
-            seen=true; emptySince=nil
-            STATE.phase=string.format("Nhặt drop · %d còn lại",#drops)
+            if not seen then seen=true; lastProgress=os.clock() end
+            emptySince=nil
+            STATE.phase=string.format("Nhặt · còn %d / đã biến mất %d",#drops,confirmed)
             if CONFIG.pickupMode=="Gần" or fallback then
                 local r=hrp()
                 if r then table.sort(drops,function(x,y) return (x.pos-r.Position).Magnitude<(y.pos-r.Position).Magnitude end) end
@@ -569,20 +584,23 @@ local function collectDrops()
             else
                 pickupFast(drops)
             end
-            if os.clock()-lastProgress>2 then
-                if CONFIG.pickupMode=="Nhanh" and CONFIG.pickupFallback and not fallback then
-                    fallback=true; lastProgress=os.clock()
-                    note("Nhặt tại chỗ chưa được xác nhận; thử đến drop")
-                else
-                    note("Drop không giảm: túi đầy hoặc game chưa chấp nhận nhặt")
-                    break
-                end
+            if not fallback and CONFIG.pickupMode=="Nhanh" and CONFIG.pickupFallback and os.clock()-lastProgress>.8 then
+                fallback=true
+                note("Nhặt tại chỗ chưa được xác nhận; thử gần drop, không Back ngay")
             end
         end
         pause(.15)
     end
     STATE.pickupSecs=os.clock()-started
-    return #stageDrops()
+    STATE.pickupConfirmed=confirmed
+    local remaining=#stageDrops()
+    if confirmed==0 then
+        STATE.pickupBlocked=true; CONFIG.auto=false
+        local cache=Workspace:FindFirstChild("OreCache")
+        local children=cache and #cache:GetChildren() or 0
+        error(string.format("Chưa nhặt được drop: còn %d, OreCache %d mục. Đã dừng Auto và KHÔNG Back; chọn Gần hoặc nhặt bằng game.",remaining,children),0)
+    end
+    return remaining
 end
 local function countOre(d)
     local total=0
@@ -622,6 +640,7 @@ local function returnStage(oreBefore,pos)
 end
 local farmStage
 local function stageRun()
+    STATE.pickupBlocked=false
     local runStart=os.clock()
     checkpoint()
     if dead() then error("Character unavailable; waiting for respawn",0) end
@@ -1188,7 +1207,15 @@ local actions={stageRun=stageRun,trainPass=trainPass,forgePass=forgePass,equipPa
     sellPass=sellPass,upgradePass=upgradePass,rebirthPass=rebirthPass,indexPass=indexPass,
     towerRun=towerRun,dailyTicketPass=dailyTicketPass,enchantPass=enchantPass,racePass=racePass,
     refresh=function() refresh(true) end,
-    prepare=function() equipPass(); indexPass(); refresh(true) end}
+    prepare=function() equipPass(); indexPass(); refresh(true) end,
+    pickupCurrent=function()
+        STATE.pickupBlocked=false; refresh(true)
+        local before=STATE.ore; local root=hrp()
+        if not root then error("Character unavailable",0) end
+        local pos=root.Position
+        collectDrops(); returnStage(before,pos); refresh(true)
+        note("Đã nhặt lại tại màn hiện tại; +"..math.max(0,STATE.ore-before).." quặng")
+    end}
 local queue={}
 local nextAllowed={}
 local connections={}
@@ -1226,7 +1253,7 @@ local function run(name,args,feature,isAuto)
     STATE.busy=true; activeEpoch=stopEpoch; currentFeature=feature; automatic=isAuto
     local ok,err=pcall(function() actions[name](table.unpack(args or {},1,args and args.n or 0)) end)
     unpin()
-    if name=="stageRun" and not ok and not plr:GetAttribute("Dungeoning") then pcall(function() exitBE:Fire(true) end) end
+    if name=="stageRun" and not ok and not STATE.pickupBlocked and not plr:GetAttribute("Dungeoning") then pcall(function() exitBE:Fire(true) end) end
     STATE.busy=false; currentFeature=nil; automatic=false; STATE.phase="idle"
     if name=="towerRun" then nextAllowed[name]=os.clock()+5 end
     if not ok then
@@ -1316,7 +1343,7 @@ local function destroy()
     if destroyLuna then pcall(destroyLuna,Luna) end
 end
 _G.__LTF_HUB_V6={destroy=destroy}
-bootText.Text="Đăng Răng To HUB · V7.1 LUNA\nĐang tải giao diện Luna…"
+bootText.Text="Đăng Răng To HUB · V7 LUNA\nĐang tải giao diện Luna…"
 local LUNA_URL="https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/f714cba7b040b5100ad17cec1a4e5dc27c1f02a3/source.lua"
 local previousConfirm
 local env=type(getgenv)=="function" and getgenv() or _G
@@ -1367,7 +1394,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7.1",
+    Subtitle="+1 Loot To Forge · V7",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1454,10 +1481,11 @@ farm:CreateSection("Vòng farm")
 toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
 slider(farm,"Màn farm · 0 = sâu nhất đã vượt","stage",0,27,0)
 dropdown(farm,"Cách nhặt drop","pickupMode",{"Nhanh","Gần"},"Nhanh","Nhanh: kích hoạt hàng loạt tại chỗ. Gần: đến từng drop khi game yêu cầu khoảng cách.")
-toggle(farm,"Tự đến drop nếu nhặt nhanh thất bại","pickupFallback","Mặc định tắt để tránh teleport chậm. Chỉ dùng nếu game từ chối nhặt tại chỗ.")
+toggle(farm,"Tự đến drop nếu nhặt nhanh thất bại","pickupFallback","Mặc định bật: chỉ đến drop khi nhặt tại chỗ chưa được xác nhận. Không Back nếu chưa nhặt được gì.")
 slider(farm,"Giới hạn nhặt · giây","pickupTimeout",4,30,12)
 slider(farm,"Giới hạn chờ Back · giây","backTimeout",2,12,5)
 button(farm,"Farm một lượt",function() action("stageRun") end)
+button(farm,"Nhặt lại drop tại màn hiện tại",function() action("pickupCurrent") end,"Không vào màn mới; thử nhặt và chỉ Back khi có drop biến mất.")
 farm:CreateSection("Nhịp farm")
 farm:CreateInput({Name="Nghỉ giữa lượt · giây",CurrentValue="0.15",PlaceholderText="0.15",Numeric=true,Enter=false,Callback=function(value)
     local n=tonumber(value); if api and n then api.set("runGap",math.clamp(n,0,5)) end
