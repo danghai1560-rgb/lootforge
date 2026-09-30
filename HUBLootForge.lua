@@ -421,17 +421,62 @@ local function oreModels()
 end
 
 local function dropPosition(o)
+    if o:IsA("Attachment") then return o.WorldPosition end
     if o:IsA("BasePart") then return o.Position end
-    local part = o:FindFirstChildWhichIsA("BasePart",true)
-    return part and part.Position
+    if o:IsA("ProximityPrompt") then
+        local parent=o.Parent
+        if parent then return dropPosition(parent) end
+        return nil
+    end
+    local part=o:FindFirstChildWhichIsA("BasePart",true)
+    if part then return part.Position end
+    if o:IsA("Model") then return o:GetPivot().Position end
+    return nil
 end
-local function stageDrops(z)
-    local result = {}
-    for _,o in ipairs(oreModels()) do
-        local p=dropPosition(o)
-        if p and math.abs(p.Z-z)<80 then result[#result+1]=o end
+local function stageDrops()
+    -- OreCache is the game's drop container. Do not filter by stage Z: drops
+    -- can be parented below folders or spawn outside the guessed stage position.
+    local cache=Workspace:FindFirstChild("OreCache")
+    if not cache then return {} end
+    local result={}
+    for _,o in ipairs(cache:GetDescendants()) do
+        if o:IsA("ProximityPrompt") and o.Enabled then
+            local pos=dropPosition(o)
+            if pos then result[#result+1]={object=o,prompt=o,pos=pos} end
+        end
+    end
+    if #result==0 then
+        for _,o in ipairs(cache:GetChildren()) do
+            if not o:FindFirstChildWhichIsA("ProximityPrompt",true) then
+                local pos=dropPosition(o)
+                if pos then result[#result+1]={object=o,pos=pos} end
+            end
+        end
     end
     return result
+end
+local function pickupDrop(drop)
+    checkpoint()
+    if not drop.object.Parent then return false end
+    pin(drop.pos+Vector3.new(0,1.5,0)); pause(0.4)
+    if drop.prompt then
+        local pp=drop.prompt
+        if not pp.Enabled or not pp.Parent then return false end
+        local hold=math.clamp(tonumber(pp.HoldDuration) or 0,0,10)
+        local begun,beginError=pcall(function() pp:InputHoldBegin() end)
+        local waited,waitError=pcall(function() pause(hold+0.15) end)
+        if begun then pcall(function() pp:InputHoldEnd() end) end
+        if not waited then error(waitError,0) end
+        if pp.Parent and pp.Enabled and type(fireproximityprompt)=="function" then
+            local ok,err=pcall(function() fireproximityprompt(pp) end)
+            if not ok then note("Pickup call failed: "..tostring(err)) end
+        elseif not begun then
+            error("No supported prompt pickup: "..tostring(beginError),0)
+        end
+    end
+    -- Touch-only drops get time for the character/game pickup handler to react.
+    pause(0.4)
+    return not drop.object.Parent or (drop.prompt and not drop.prompt.Enabled) or false
 end
 local farmStage
 local function stageRun()
@@ -476,29 +521,29 @@ local function stageRun()
     local remaining=0
     while os.clock()-collectStart<35 do
         checkpoint()
-        local drops=stageDrops(pos.Z)
+        local drops=stageDrops()
         remaining=#drops
         if remaining==0 then
             quietSince=quietSince or os.clock()
-            if os.clock()-quietSince>=3 then break end
+            if os.clock()-quietSince>=6 then break end
         else
             quietSince=nil
             if previous~=remaining then noProgressSince=os.clock(); previous=remaining end
-            for _,o in ipairs(drops) do
+            local confirmed=0
+            for i,drop in ipairs(drops) do
                 checkpoint()
-                if o.Parent then
-                    local pp=o:FindFirstChildWhichIsA("ProximityPrompt",true)
-                    local p=dropPosition(o)
-                    if pp and pp.Enabled and p then
-                        pin(p+Vector3.new(0,2,0)); pause(0.15)
-                        fireproximityprompt(pp); pause(0.15)
-                    end
-                end
+                if os.clock()-collectStart>=35 then break end
+                STATE.phase=string.format("Picking drop %d/%d",i,#drops)
+                if pickupDrop(drop) then confirmed=confirmed+1 end
             end
+            if confirmed>0 then noProgressSince=os.clock() end
+            note(string.format("Drops found: %d; pickup confirmed: %d; prompt helper: %s",
+                remaining,confirmed,type(fireproximityprompt)=="function" and "yes" or "no"))
             if os.clock()-noProgressSince>8 then break end
         end
         pause(0.2)
     end
+    remaining=#stageDrops()
     unpin()
     STATE.phase="Returning / confirming ore"
     exitBE:Fire(true)
@@ -791,8 +836,8 @@ local function towerRun()
     checkpoint(); refresh(true)
     if dead() then error("Character unavailable",0) end
     if not plr:GetAttribute("Dungeoning") then
-        if STATE.rebirth<2 then note("Tower requires rebirth 2"); return end
-        if STATE.tickets<=CONFIG.towerKeep then note("No spendable tower tickets"); return end
+        if STATE.rebirth<2 then note("Tháp yêu cầu rebirth 2"); return end
+        if STATE.tickets<=CONFIG.towerKeep then note("Không còn vé tháp vượt mức giữ lại"); return end
         unpin()
         invoke(R_dungeonInto,1)
         local start=os.clock()
@@ -1042,6 +1087,9 @@ function API.set(k,v)
     if CONFIG[k]==nil then return false end
     if k=="auto" and not v then API.stop() else CONFIG[k]=v end
     if k=="stage" then farmStage=nil end
+    if v==true and (k=="farm" or k=="tower" or k=="train") then
+        CONFIG.auto=true
+    end
     return true
 end
 function API.call(name,...)
@@ -1221,7 +1269,7 @@ local function input(p,title,key,default,min,max)
     end)
 end
 local general=page("Tổng quan")
-label(general,"Bật Auto tổng và các chức năng cần dùng. Tác vụ chạy lần lượt; nút thủ công chỉ nhận khi bộ xử lý rảnh.")
+label(general,"Bật Farm màn, Tháp hoặc Luyện sẽ tự bật Auto tổng. Tác vụ chạy lần lượt; nút thủ công chỉ nhận khi bộ xử lý rảnh.")
 toggle(general,"AUTO TỔNG","auto")
 local stop=button("DỪNG & TẮT TOÀN BỘ",general)
 connect(stop.Activated,function() if api then api.disableAll() end; resetPlayer(); inform("Đã yêu cầu dừng") end)
