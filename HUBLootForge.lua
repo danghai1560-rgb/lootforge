@@ -1,6 +1,6 @@
--- Đăng Răng To HUB v6.1 — GitHub RAW, bundled engine + UI.
+-- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-6.1-UI"
+local BUILD="DRT-7-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -19,7 +19,7 @@ if not UIHost then bootLog.status="error"; bootLog.error="PlayerGui unavailable"
 local previousNotice=UIHost:FindFirstChild("DangRangToStartup")
 if previousNotice then previousNotice:Destroy() end
 local bootGui=Instance.new("ScreenGui")
-bootGui.Name="DangRangToStartup"; bootGui.ResetOnSpawn=false; bootGui.IgnoreGuiInset=true; bootGui.DisplayOrder=10001
+bootGui.Name="DangRangToStartup"; bootGui.ResetOnSpawn=false; bootGui.IgnoreGuiInset=true; bootGui.DisplayOrder=2147483647
 local bootText=Instance.new("TextLabel")
 bootText.Size=UDim2.new(.8,0,0,90); bootText.Position=UDim2.new(.1,0,0,25)
 bootText.BackgroundColor3=Color3.fromRGB(29,24,42); bootText.TextColor3=Color3.fromRGB(231,220,255)
@@ -27,10 +27,9 @@ bootText.Font=Enum.Font.Gotham; bootText.TextSize=14; bootText.TextWrapped=true
 bootText.Text="Đăng Răng To HUB · "..BUILD.."\nĐang dựng menu…"
 bootText.Parent=bootGui; bootGui.Parent=UIHost
 local function StartHub()
--- Đăng Răng To HUB v6: one-file GitHub raw entry point; engine and UI included.
-if game.PlaceId ~= 118805555015549 then error("Sai game +1 Loot To Forge: "..tostring(game.PlaceId),0) end
+if game.PlaceId~=118805555015549 then error("Sai game +1 Loot To Forge",0) end
 local function CreateBundledEngine()
--- Đăng Răng To HUB engine v6. Static review only; game integration requires live testing.
+-- Đăng Răng To HUB engine v7 Luna. Static review only; game integration requires live testing.
 if game.PlaceId ~= 118805555015549 then error("Wrong game") end
 if _G.__LOOTTOFORGE_DBG and _G.__LOOTTOFORGE_DBG.shutdown then _G.__LOOTTOFORGE_DBG.shutdown() end
 _G.__LOOTTOFORGE_DBG = nil
@@ -49,6 +48,13 @@ _G.__LOOTTOFORGE = GEN
 --------------------------------------------------------------------------------
 
 local CONFIG = {
+    pickupMode = "Nhanh",
+    pickupFallback = false,
+    pickupTimeout = 12,
+    backTimeout = 5,
+    runGap = 0.15,
+    orePerForge = 0,
+    raceProfile = "Train",
 	auto = false,
 
 	farm = false,         -- clear a stage, collect the ore, return to commit it
@@ -93,7 +99,14 @@ local STATE = {
 	busy = false,
 }
 
-local function note(t) STATE.note = tostring(t) end
+STATE.startedAt=os.clock()
+STATE.log={}
+STATE.pickupSecs=0; STATE.backSecs=0; STATE.runSecs=0; STATE.pickupRequests=0
+local function note(t)
+    STATE.note=tostring(t)
+    STATE.log[#STATE.log+1]=string.format("[%ds] %s",math.floor(os.clock()-STATE.startedAt),STATE.note)
+    if #STATE.log>80 then table.remove(STATE.log,1) end
+end
 local stopEpoch, activeEpoch = 0, 0
 local currentFeature, automatic = nil, false
 local function cancelled()
@@ -484,31 +497,132 @@ local function stageDrops()
     end
     return result
 end
-local function pickupDrop(drop)
+local function pickupNear(drop)
     checkpoint()
-    if not drop.object.Parent then return false end
-    pin(drop.pos+Vector3.new(0,1.5,0)); pause(0.4)
-    if drop.prompt then
+    if not drop.object.Parent then return end
+    pin(drop.pos+Vector3.new(0,1.5,0)); pause(0.12)
+    if drop.prompt and drop.prompt.Parent and drop.prompt.Enabled then
         local pp=drop.prompt
-        if not pp.Enabled or not pp.Parent then return false end
-        local hold=math.clamp(tonumber(pp.HoldDuration) or 0,0,10)
-        local begun,beginError=pcall(function() pp:InputHoldBegin() end)
-        local waited,waitError=pcall(function() pause(hold+0.15) end)
-        if begun then pcall(function() pp:InputHoldEnd() end) end
-        if not waited then error(waitError,0) end
-        if pp.Parent and pp.Enabled and type(fireproximityprompt)=="function" then
+        if type(fireproximityprompt)=="function" then
             local ok,err=pcall(function() fireproximityprompt(pp) end)
-            if not ok then note("Pickup call failed: "..tostring(err)) end
-        elseif not begun then
-            error("No supported prompt pickup: "..tostring(beginError),0)
+            if not ok then error("Pickup failed: "..tostring(err),0) end
+        else
+            local begun,err=pcall(function() pp:InputHoldBegin() end)
+            if not begun then error(tostring(err),0) end
+            local ok,waitError=pcall(function() pause(math.clamp(tonumber(pp.HoldDuration) or 0,0,10)+0.05) end)
+            pcall(function() pp:InputHoldEnd() end)
+            if not ok then error(waitError,0) end
         end
     end
-    -- Touch-only drops get time for the character/game pickup handler to react.
-    pause(0.4)
-    return not drop.object.Parent or (drop.prompt and not drop.prompt.Enabled) or false
+    pause(0.12)
+end
+local function pickupFast(drops)
+    checkpoint()
+    if type(fireproximityprompt)~="function" then
+        note("Executor thiếu nhặt nhanh; chọn Gần hoặc bật tự đến drop")
+        return 0
+    end
+    local requests=0
+    for _,drop in ipairs(drops) do
+        checkpoint()
+        local pp=drop.prompt
+        if pp and pp.Parent and pp.Enabled then
+            local ok,err=pcall(function() fireproximityprompt(pp) end)
+            if ok then requests=requests+1 else note("Pickup: "..tostring(err)) end
+        end
+    end
+    STATE.pickupRequests=STATE.pickupRequests+requests
+    return requests
+end
+local function collectDrops()
+    local started=os.clock()
+    local lastProgress=started
+    local emptySince=nil
+    local seen=false
+    local previousSet={}
+    local fallback=false
+    while os.clock()-started<CONFIG.pickupTimeout do
+        checkpoint()
+        local drops=stageDrops()
+        local changed=false
+        local currentSet={}
+        for _,drop in ipairs(drops) do
+            currentSet[drop.object]=true
+            if not previousSet[drop.object] then changed=true end
+        end
+        for object in pairs(previousSet) do if not currentSet[object] then changed=true end end
+        if changed then lastProgress=os.clock() end
+        previousSet=currentSet
+        if #drops==0 then
+            emptySince=emptySince or os.clock()
+            if (seen and os.clock()-emptySince>=.4) or (not seen and os.clock()-started>=4) then break end
+        else
+            seen=true; emptySince=nil
+            STATE.phase=string.format("Nhặt drop · %d còn lại",#drops)
+            if CONFIG.pickupMode=="Gần" or fallback then
+                local r=hrp()
+                if r then table.sort(drops,function(x,y) return (x.pos-r.Position).Magnitude<(y.pos-r.Position).Magnitude end) end
+                for _,drop in ipairs(drops) do
+                    if os.clock()-started>=CONFIG.pickupTimeout then break end
+                    pickupNear(drop)
+                end
+            else
+                pickupFast(drops)
+            end
+            if os.clock()-lastProgress>2 then
+                if CONFIG.pickupMode=="Nhanh" and CONFIG.pickupFallback and not fallback then
+                    fallback=true; lastProgress=os.clock()
+                    note("Nhặt tại chỗ chưa được xác nhận; thử đến drop")
+                else
+                    note("Drop không giảm: túi đầy hoặc game chưa chấp nhận nhặt")
+                    break
+                end
+            end
+        end
+        pause(.15)
+    end
+    STATE.pickupSecs=os.clock()-started
+    return #stageDrops()
+end
+local function countOre(d)
+    local total=0
+    for _,it in pairs((d and d.Backpack and d.Backpack.have) or {}) do
+        if it.Type=="Ore" then total=total+(tonumber(it.Number) or 1) end
+    end
+    return total
+end
+local function returnStage(oreBefore,pos)
+    unpin(); checkpoint()
+    STATE.phase="Back · chờ game xác nhận"
+    local started=os.clock()
+    local initialRoot=hrp()
+    local returnFrom=initialRoot and initialRoot.Position or pos
+    exitBE:Fire(true)
+    local got=0
+    local left=false
+    repeat
+        pause(.15)
+        local ok,snapshot=pcall(data)
+        if not ok then STATE.backSecs=os.clock()-started; error("Back chưa được xác nhận: "..tostring(snapshot),0) end
+        if snapshot then got=math.max(0,countOre(snapshot)-oreBefore) end
+        local r=hrp()
+        left=r and (r.Position-returnFrom).Magnitude>35 or false
+        -- Ore gain is server confirmation. Moving home is only used if the
+        -- client's Return did not move the character after committing the bag.
+        if got>0 or (left and os.clock()-started>=.35) then break end
+    until os.clock()-started>=CONFIG.backTimeout
+    STATE.backSecs=os.clock()-started
+    if got==0 and not left then error("Back chưa được xác nhận; đã dừng Auto để tránh vào màn chồng",0) end
+    if not left then
+        local home=trainPos(bestArea()) or Vector3.new(-50,4,-30)
+        local root=hrp(); if root then root.CFrame=CFrame.new(home) end
+        pause(.15)
+    end
+    return got
 end
 local farmStage
 local function stageRun()
+    local runStart=os.clock()
     checkpoint()
     if dead() then error("Character unavailable; waiting for respawn",0) end
     if plr:GetAttribute("Dungeoning") then error("Exit tower before farming",0) end
@@ -542,50 +656,16 @@ local function stageRun()
         pause(0.25)
     end
     if #enemiesNear(pos.Z)>0 then error("Stage clear timed out",0) end
-    STATE.phase="Collecting drops"
-    local collectStart=os.clock()
-    local quietSince=nil
-    local noProgressSince=os.clock()
-    local previous=nil
-    local remaining=0
-    while os.clock()-collectStart<35 do
-        checkpoint()
-        local drops=stageDrops()
-        remaining=#drops
-        if remaining==0 then
-            quietSince=quietSince or os.clock()
-            if os.clock()-quietSince>=6 then break end
-        else
-            quietSince=nil
-            if previous~=remaining then noProgressSince=os.clock(); previous=remaining end
-            local confirmed=0
-            for i,drop in ipairs(drops) do
-                checkpoint()
-                if os.clock()-collectStart>=35 then break end
-                STATE.phase=string.format("Picking drop %d/%d",i,#drops)
-                if pickupDrop(drop) then confirmed=confirmed+1 end
-            end
-            if confirmed>0 then noProgressSince=os.clock() end
-            note(string.format("Drops found: %d; pickup confirmed: %d; prompt helper: %s",
-                remaining,confirmed,type(fireproximityprompt)=="function" and "yes" or "no"))
-            if os.clock()-noProgressSince>8 then break end
-        end
-        pause(0.2)
-    end
-    remaining=#stageDrops()
-    unpin()
-    STATE.phase="Returning / confirming ore"
-    exitBE:Fire(true)
-    pause(2)
-    local home=trainPos(bestArea()) or Vector3.new(-50,4,-30)
-    local root=hrp(); if root then root.CFrame=CFrame.new(home) end
-    pause(0.5)
-    refresh(true)
-    local got=math.max(0,STATE.ore-oreBefore)
+    STATE.phase="Nhặt drop"
+    local remaining=collectDrops()
+    local got=returnStage(oreBefore,pos)
+    refresh(false)
+    STATE.ore=oreBefore+got
+    STATE.runSecs=os.clock()-runStart
     STATE.runs=STATE.runs+1; STATE.oreGot=STATE.oreGot+got
-    STATE.lastRun=string.format("Stage %d: +%d ore, %d drops remaining",n,got,remaining)
+    STATE.lastRun=string.format("Màn %d: +%d quặng · %.1fs · nhặt %.1fs / back %.1fs · còn %d drop",n,got,STATE.runSecs,STATE.pickupSecs,STATE.backSecs,remaining)
     if remaining>0 then note(STATE.lastRun.." (bag full or pickup rejected)") else note(STATE.lastRun) end
-    pause(0.5)
+    pause(CONFIG.runGap)
 end
 
 --------------------------------------------------------------------------------
@@ -623,9 +703,12 @@ local function forgePass()
 		-- the rules the server enforces by eating the ore: category, <=4 types, >=4 ore
 		local list, total, used = {}, 0, {}
 		for i = 1, math.min(4, #ores) do
-			list[ores[i].uuid] = ores[i].n
-			total = total + ores[i].n
-			used[#used + 1] = ores[i].id .. "x" .. ores[i].n
+			local budget=CONFIG.orePerForge>0 and math.max(4,CONFIG.orePerForge) or math.huge
+            local amount=math.min(ores[i].n,math.max(0,budget-total))
+            if amount>0 then
+                list[ores[i].uuid]=amount; total=total+amount
+                used[#used+1]=ores[i].id.."x"..amount
+            end
 		end
 		if total < 4 then return end
 
@@ -969,11 +1052,14 @@ local RACE_WEIGHT = { Train = 100, Luck = 40, Damage = 6, Crit = 5, SkillDamage 
 	Defence = 2, SkillCD = 1, WalkSpeed = 1 }
 
 local function raceScore(classId, level)
+    local weights=RACE_WEIGHT
+    if CONFIG.raceProfile=="Luck" then weights={Train=40,Luck=100,Damage=6,Crit=5,Defence=2}
+    elseif CONFIG.raceProfile=="Combat" then weights={Train=10,Luck=10,Damage=100,Crit=60,SkillDamage=50,Defence=40,SkillCD=10} end
 	local s = 0
 	local ok, boosts = pcall(function() return ClassHelper.GetClassBoosts(classId, level or 1) end)
 	if ok and type(boosts) == "table" then
 		for stat, v in pairs(boosts) do
-			s = s + (RACE_WEIGHT[stat] or 1) * (tonumber(v) or 0)
+			s = s + (weights[stat] or 1) * (tonumber(v) or 0)
 		end
 	end
 	-- a rarer race wins a tie
@@ -1097,11 +1183,12 @@ local function unstuck()
 end
 
 
-local API={CONFIG=CONFIG,STATE=STATE,POS=POS,version=6,ready=false}
+local API={CONFIG=CONFIG,STATE=STATE,POS=POS,version=7,ready=false}
 local actions={stageRun=stageRun,trainPass=trainPass,forgePass=forgePass,equipPass=equipPass,
     sellPass=sellPass,upgradePass=upgradePass,rebirthPass=rebirthPass,indexPass=indexPass,
     towerRun=towerRun,dailyTicketPass=dailyTicketPass,enchantPass=enchantPass,racePass=racePass,
-    refresh=function() refresh(true) end}
+    refresh=function() refresh(true) end,
+    prepare=function() equipPass(); indexPass(); refresh(true) end}
 local queue={}
 local nextAllowed={}
 local connections={}
@@ -1110,7 +1197,7 @@ function API.stop()
 end
 function API.disableAll()
     API.stop()
-    for k,v in pairs(CONFIG) do if type(v)=="boolean" then CONFIG[k]=false end end
+    for k,v in pairs(CONFIG) do if type(v)=="boolean" and k~="pickupFallback" then CONFIG[k]=false end end
 end
 function API.set(k,v)
     if CONFIG[k]==nil then return false end
@@ -1145,6 +1232,7 @@ local function run(name,args,feature,isAuto)
     if not ok then
         note(tostring(err))
         if tostring(err)~="Stopped" then nextAllowed[name]=os.clock()+5 end
+        if name=="stageRun" and tostring(err):find("Back chưa",1,true) then CONFIG.auto=false end
     end
 end
 local required={total=R.total,forge=R.forge,rebirth=R.rebirth,hit=hitBE,exit=exitBE,
@@ -1192,22 +1280,20 @@ note("Engine ready; all automation disabled")
 return API
 
 end
-
 local Players=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local RS=game:GetService("RunService")
-local Tween=game:GetService("TweenService")
 local player=Players.LocalPlayer
 if _G.__LTF_HUB_V6 then pcall(function() _G.__LTF_HUB_V6.destroy() end) end
-local connections={}
 local alive=true
-local api=nil
-local loading="Đang tải bộ xử lý…"
+local connections={}
+local api,Luna,Window,lunaGui
+local engineMessage="Đang khởi tạo bộ xử lý…"
 local jump,noclip=false,false
 local speed=nil
 local collision={}
-local function connect(signal,fn)
-    local c=signal:Connect(fn); connections[#connections+1]=c; return c
+local function connect(signal,callback)
+    local c=signal:Connect(callback); connections[#connections+1]=c; return c
 end
 local function restoreCollision()
     for part,value in pairs(collision) do if part.Parent then part.CanCollide=value end end
@@ -1219,212 +1305,202 @@ local function resetPlayer()
     if speed and h then h.WalkSpeed=speed.original end
     speed=nil
 end
-local gui=Instance.new("ScreenGui")
-gui.Name="DangRangToHubV6"; gui.ResetOnSpawn=false; gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
-gui.DisplayOrder=10000; gui.Enabled=true; gui.IgnoreGuiInset=true
-gui.Parent=UIHost
-local function make(class,props,parent)
-    local o=Instance.new(class)
-    for k,v in pairs(props) do
-        local ok,err=pcall(function() o[k]=v end)
-        if not ok then o:Destroy(); error("UI "..class.."."..k..": "..tostring(err),0) end
-    end
-    o.Parent=parent; return o
+local destroyed=false
+local destroyLuna
+local function destroy()
+    if destroyed then return end
+    destroyed=true; alive=false
+    if api then api.shutdown() end
+    resetPlayer()
+    for _,c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+    if destroyLuna then pcall(destroyLuna,Luna) end
 end
--- Original self-contained design; Fluent/Luna examples used as visual references.
-local bg=Color3.fromRGB(18,18,23)
-local card=Color3.fromRGB(29,29,37)
-local accent=Color3.fromRGB(167,139,250)
-local white=Color3.fromRGB(241,239,249)
-local muted=Color3.fromRGB(148,146,165)
-local green=Color3.fromRGB(99,213,172)
-local red=Color3.fromRGB(242,127,145)
-local function round(o,r) make("UICorner",{CornerRadius=UDim.new(0,r or 10)},o) end
-local function stroke(o,color,transparency)
-    return make("UIStroke",{Color=color or Color3.fromRGB(66,63,80),Transparency=transparency or .55,Thickness=1},o)
+_G.__LTF_HUB_V6={destroy=destroy}
+bootText.Text="Đăng Răng To HUB · V7 LUNA\nĐang tải giao diện Luna…"
+local LUNA_URL="https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/f714cba7b040b5100ad17cec1a4e5dc27c1f02a3/source.lua"
+local previousConfirm
+local env=type(getgenv)=="function" and getgenv() or _G
+previousConfirm=env.ConfirmLuna; env.ConfirmLuna=true
+local loaded,result=pcall(function()
+    local source=game:HttpGet(LUNA_URL)
+    -- Track service connections in this pinned Luna revision so reloading the
+    -- Hub also disconnects the library's keyboard and drag listeners.
+    source=source:gsub("([%a_][%w_%.]*)%:Connect%(","OwnedLunaConnect(%1,")
+    local count
+    source,count=source:gsub("function Luna:Destroy%(%)", [[function Luna:Destroy()
+        for _,connection in ipairs(OwnedLunaConnections) do pcall(function() connection:Disconnect() end) end
+        table.clear(OwnedLunaConnections)]],1)
+    if count~=1 then error("Luna lifecycle adapter không khớp phiên bản",0) end
+    source=[[local OwnedLunaConnections={}
+local function OwnedLunaConnect(signal,callback)
+    local connection=signal:Connect(callback)
+    OwnedLunaConnections[#OwnedLunaConnections+1]=connection
+    return connection
 end
-local activeTweens={}
-local function animate(o,props)
-    if not alive or not o.Parent then return end
-    if activeTweens[o] then activeTweens[o]:Cancel() end
-    local t=Tween:Create(o,TweenInfo.new(.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),props)
-    activeTweens[o]=t; t:Play()
-end
-local root=make("Frame",{Size=UDim2.fromOffset(800,570),Position=UDim2.fromScale(.5,.5),AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=bg,BorderSizePixel=0},gui); round(root,16); stroke(root,accent,.65)
-local scale=make("UIScale",{Scale=1},root)
-local top=make("Frame",{Size=UDim2.new(1,0,0,65),BackgroundColor3=Color3.fromRGB(23,22,30),BorderSizePixel=0},root); round(top,16)
-make("Frame",{Size=UDim2.new(1,-32,0,1),Position=UDim2.fromOffset(16,64),BackgroundColor3=Color3.fromRGB(55,51,70),BorderSizePixel=0},root)
-local emblem=make("TextLabel",{Size=UDim2.fromOffset(38,38),Position=UDim2.fromOffset(18,13),BackgroundColor3=Color3.fromRGB(53,42,78),Text="ĐR",TextColor3=accent,Font=Enum.Font.GothamBold,TextSize=17},root); round(emblem,11)
-local header=make("TextLabel",{Size=UDim2.new(1,-176,0,28),Position=UDim2.fromOffset(68,10),BackgroundTransparency=1,Text="Đăng Răng To HUB",TextColor3=white,TextSize=20,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},root)
-local subtitle=make("TextLabel",{Size=UDim2.new(1,-176,0,18),Position=UDim2.fromOffset(69,37),BackgroundTransparency=1,Text="LOOT TO FORGE  /  V6",TextColor3=muted,TextSize=10,Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left},root)
-local function button(text,parent,size,pos)
-    local o=make("TextButton",{Size=size or UDim2.new(1,0,0,44),Position=pos or UDim2.new(),Text=text,TextColor3=white,BackgroundColor3=card,BorderSizePixel=0,Font=Enum.Font.GothamMedium,TextSize=13,AutoButtonColor=false,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},parent)
-    round(o,9); stroke(o)
-    make("UIPadding",{PaddingLeft=UDim.new(0,14),PaddingRight=UDim.new(0,14)},o)
-    connect(o.MouseEnter,function() animate(o,{BackgroundColor3=Color3.fromRGB(43,40,54)}) end)
-    connect(o.MouseLeave,function() animate(o,{BackgroundColor3=card}) end)
-    return o
-end
-local hide=button("−",root,UDim2.fromOffset(34,32),UDim2.new(1,-91,0,16)); hide.TextXAlignment=Enum.TextXAlignment.Center
-local close=button("×",root,UDim2.fromOffset(34,32),UDim2.new(1,-49,0,16)); close.TextXAlignment=Enum.TextXAlignment.Center; close.TextColor3=red
-local open=button("ĐR",gui,UDim2.fromOffset(50,50),UDim2.fromOffset(16,110)); open.Visible=false; open.TextXAlignment=Enum.TextXAlignment.Center; open.TextColor3=accent; stroke(open,accent,.2)
-connect(hide.Activated,function() root.Visible=false; open.Visible=true end)
-connect(open.Activated,function() root.Visible=true; open.Visible=false end)
-local sidebar=make("ScrollingFrame",{Size=UDim2.fromOffset(166,380),Position=UDim2.fromOffset(14,86),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=0,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y},root)
-make("UIListLayout",{Padding=UDim.new(0,7)},sidebar)
-local sideCaption=make("TextLabel",{Size=UDim2.new(1,0,0,18),BackgroundTransparency=1,Text="KHÔNG GIAN LÀM VIỆC",TextColor3=muted,TextSize=9,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},sidebar)
-local content=make("Frame",{Size=UDim2.new(1,-218,1,-155),Position=UDim2.fromOffset(200,86),BackgroundTransparency=1},root)
-local pageTitle=make("TextLabel",{Size=UDim2.new(1,0,0,31),BackgroundTransparency=1,Text="Tổng quan",TextColor3=white,TextSize=23,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},content)
-local pageHost=make("Frame",{Size=UDim2.new(1,0,1,-43),Position=UDim2.fromOffset(0,43),BackgroundTransparency=1},content)
-local footer=make("TextLabel",{Size=UDim2.new(1,-65,0,45),Position=UDim2.new(0,45,1,-54),BackgroundTransparency=1,Text=loading,TextColor3=muted,TextSize=11,Font=Enum.Font.Gotham,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},root)
-local connectionDot=make("Frame",{Size=UDim2.fromOffset(8,8),Position=UDim2.new(0,25,1,-35),BackgroundColor3=accent,BorderSizePixel=0},root); round(connectionDot,8)
-make("Frame",{Size=UDim2.new(1,-32,0,1),Position=UDim2.new(0,16,1,-62),BackgroundColor3=Color3.fromRGB(55,51,70),BorderSizePixel=0},root)
-local pages={}
-local controls={}
-local selected
-local symbols={"◈","⚔","◇","♜","↗","☺"}
-local function selectPage(p,title)
-    selected=p; pageTitle.Text=title
-    for _,entry in ipairs(pages) do
-        local on=entry.p==p
-        entry.p.Visible=on; entry.nav.TextColor3=on and accent or muted
-        entry.nav.BackgroundColor3=on and Color3.fromRGB(47,38,65) or bg
-        entry.line.Visible=on
-    end
-end
-local function page(title)
-    local p=make("ScrollingFrame",{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false},pageHost)
-    make("UIListLayout",{Padding=UDim.new(0,9)},p)
-    make("UIPadding",{PaddingRight=UDim.new(0,8),PaddingBottom=UDim.new(0,12)},p)
-    local nav=make("TextButton",{Size=UDim2.new(1,0,0,42),BackgroundColor3=bg,BorderSizePixel=0,Text=(symbols[#pages+1] or "•").."   "..title,TextColor3=muted,TextSize=13,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false,TextTruncate=Enum.TextTruncate.AtEnd},sidebar); round(nav,8)
-    make("UIPadding",{PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,6)},nav)
-    local line=make("Frame",{Size=UDim2.fromOffset(3,20),Position=UDim2.new(0,0,.5,-10),BackgroundColor3=accent,BorderSizePixel=0,Visible=false},nav); round(line,3)
-    pages[#pages+1]={p=p,nav=nav,line=line,title=title}
-    connect(nav.Activated,function() selectPage(p,title) end)
-    if not selected then selectPage(p,title) end
-    return p
-end
-local function label(p,text)
-    local o=make("TextLabel",{Size=UDim2.new(1,0,0,72),BackgroundColor3=Color3.fromRGB(36,30,48),BorderSizePixel=0,AutomaticSize=Enum.AutomaticSize.Y,Text=text,TextColor3=Color3.fromRGB(193,183,214),TextSize=12,Font=Enum.Font.Gotham,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},p); round(o,10)
-    make("UIPadding",{PaddingLeft=UDim.new(0,14),PaddingRight=UDim.new(0,14),PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10)},o)
-    return o
-end
-local function section(p,title)
-    make("TextLabel",{Size=UDim2.new(1,0,0,26),BackgroundTransparency=1,Text=title,TextColor3=muted,TextSize=10,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},p)
-end
-local lastViewport
-local function resize()
-    local camera=workspace.CurrentCamera
-    if not camera then return end
-    local v=camera.ViewportSize
-    if lastViewport==v then return end
-    lastViewport=v
-    local w=math.min(800,math.max(300,v.X-24)); local height=math.min(570,math.max(280,v.Y-24))
-    local narrow=w<570; local side=narrow and 115 or 166
-    root.Size=UDim2.fromOffset(w,height); scale.Scale=math.min(1,(v.X-12)/w,(v.Y-12)/height)
-    sidebar.Size=UDim2.new(0,side,1,-163)
-    content.Position=UDim2.fromOffset(side+32,86); content.Size=UDim2.new(1,-side-50,1,-155)
-    header.TextSize=narrow and 15 or 20; pageTitle.TextSize=narrow and 19 or 23
-    sideCaption.Text=narrow and "DANH MỤC" or "KHÔNG GIAN LÀM VIỆC"
-    for _,entry in ipairs(pages) do entry.nav.TextSize=narrow and 11 or 13 end
-end
-resize()
-local messageUntil=0
-local function inform(text) loading=text; footer.Text=text; messageUntil=os.clock()+4 end
-local function call(name,...)
-    if not api then inform("Bộ xử lý chưa sẵn sàng"); return end
-    local ok,err=api.call(name,...)
-    if not ok then inform(err or "Đang có tác vụ chạy") end
-end
-local function toggle(p,title,key)
-    local row=make("TextButton",{Size=UDim2.new(1,0,0,52),BackgroundColor3=card,BorderSizePixel=0,Text="",AutoButtonColor=false},p); round(row,10); stroke(row)
-    make("TextLabel",{Size=UDim2.new(1,-87,1,0),Position=UDim2.fromOffset(14,0),BackgroundTransparency=1,Text=title,TextColor3=white,TextSize=12,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},row)
-    local track=make("Frame",{Size=UDim2.fromOffset(38,22),Position=UDim2.new(1,-53,.5,-11),BackgroundColor3=Color3.fromRGB(59,58,70),BorderSizePixel=0},row); round(track,20)
-    local knob=make("Frame",{Size=UDim2.fromOffset(16,16),Position=UDim2.fromOffset(3,3),BackgroundColor3=Color3.fromRGB(168,165,183),BorderSizePixel=0},track); round(knob,16)
-    controls[#controls+1]={button=row,title=title,key=key,track=track,knob=knob,last=nil}
-    connect(row.Activated,function()
-        if not api then inform("Chờ bộ xử lý tải xong"); return end
-        api.set(key,not api.CONFIG[key])
-    end)
-end
-local function input(p,title,key,default,min,max)
-    local row=make("Frame",{Size=UDim2.new(1,0,0,54),BackgroundColor3=card,BorderSizePixel=0},p); round(row,10); stroke(row)
-    make("TextLabel",{Size=UDim2.new(1,-99,1,0),Position=UDim2.fromOffset(14,0),BackgroundTransparency=1,Text=title,TextColor3=white,TextSize=12,Font=Enum.Font.GothamMedium,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},row)
-    local box=make("TextBox",{Size=UDim2.fromOffset(66,30),Position=UDim2.new(1,-80,.5,-15),BackgroundColor3=bg,Text=tostring(default),TextColor3=accent,TextSize=13,Font=Enum.Font.GothamBold,ClearTextOnFocus=false},row); round(box,7); stroke(box,accent,.65)
-    connect(box.FocusLost,function()
-        if not api then box.Text=tostring(default); inform("Chờ bộ xử lý"); return end
-        local n=tonumber(box.Text)
-        if not n then box.Text=tostring(api.CONFIG[key]); return end
-        n=math.clamp(math.floor(n),min,max); box.Text=tostring(n); api.set(key,n)
-    end)
-end
-local metricValues={}
-local function metrics(p)
-    local row=make("Frame",{Size=UDim2.new(1,0,0,86),BackgroundTransparency=1},p)
-    for i,title in ipairs({"LEVEL","REBIRTH","COINS"}) do
-        local tile=make("Frame",{Size=UDim2.new(1/3,-6,1,0),Position=UDim2.new((i-1)/3,0,0,0),BackgroundColor3=card,BorderSizePixel=0},row); round(tile,11); stroke(tile)
-        make("TextLabel",{Size=UDim2.new(1,-18,0,16),Position=UDim2.fromOffset(10,12),BackgroundTransparency=1,Text=title,TextColor3=muted,TextSize=9,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left},tile)
-        metricValues[i]=make("TextLabel",{Size=UDim2.new(1,-18,0,31),Position=UDim2.fromOffset(10,36),BackgroundTransparency=1,Text="—",TextColor3=i==3 and green or white,TextSize=20,Font=Enum.Font.GothamBold,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},tile)
-    end
-end
-local function compact(n)
-    n=tonumber(n) or 0
-    for _,v in ipairs({{1e12,"T"},{1e9,"B"},{1e6,"M"},{1e3,"K"}}) do if math.abs(n)>=v[1] then return string.format("%.1f%s",n/v[1],v[2]) end end
-    return tostring(math.floor(n))
-end
-local general=page("Tổng quan")
-metrics(general)
-section(general,"ĐIỀU KHIỂN")
-label(general,"Bật Farm màn, Tháp hoặc Luyện sẽ tự bật Auto tổng. Tác vụ chạy lần lượt; nút thủ công chỉ nhận khi bộ xử lý rảnh.")
-toggle(general,"AUTO TỔNG","auto")
-local stop=button("■  Dừng tất cả",general); stop.TextColor3=red; stop.BackgroundColor3=Color3.fromRGB(50,29,37)
-connect(stop.Activated,function() if api then api.disableAll() end; resetPlayer(); inform("Đã yêu cầu dừng") end)
-section(general,"HOẠT ĐỘNG GẦN ĐÂY")
-local status=label(general,""); status.Size=UDim2.new(1,0,0,128)
-local refresh=button("Làm mới dữ liệu",general); connect(refresh.Activated,function() call("refresh") end)
-local farm=page("Farm màn")
-label(farm,"Dọn màn → nhặt drop → back → quay lại cùng màn. Khi túi đầy hoặc nhặt bị từ chối, trạng thái sẽ báo số drop còn lại.")
-section(farm,"VÒNG FARM")
-toggle(farm,"Farm màn liên tục","farm")
-input(farm,"Màn (0 = màn đã vượt sâu nhất)","stage",0,0,27)
-local once=button("Farm một lượt",farm); connect(once.Activated,function() call("stageRun") end)
-section(farm,"LUYỆN SỨC MẠNH")
-toggle(farm,"Luyện khi không farm màn","train")
-input(farm,"Thời gian luyện (giây)","trainSecs",20,5,120)
-local train=button("Luyện một lượt",farm); connect(train.Activated,function() call("trainPass",api and api.CONFIG.trainSecs or 20) end)
-local gear=page("Trang bị")
-section(gear,"TỰ ĐỘNG TRANG BỊ")
-for _,v in ipairs({{"Tự rèn","forge"},{"Rèn xen kẽ giáp","forgeArmor"},{"Mặc đồ tốt nhất","equip"},{"Bán đồ yếu","sell"},{"Tự cường hóa","enchant"}}) do toggle(gear,v[1],v[2]) end
-section(gear,"THAO TÁC NHANH")
-for _,v in ipairs({{"Rèn ngay","forgePass"},{"Mặc ngay","equipPass"},{"Bán ngay","sellPass"},{"Cường hóa ngay","enchantPass"}}) do local b=button(v[1],gear); local action=v[2]; connect(b.Activated,function() call(action) end) end
-local element=button("Nguyên tố: Fire",gear)
-connect(element.Activated,function()
-    if not api then return end
-    local list={"Fire","Ice","Thunder","Poison"}; local n=table.find(list,api.CONFIG.element) or 1
-    api.set("element",list[n%4+1])
+]]..source
+    local fn,err=loadstring(source,"LunaInterfacePinned")
+    if not fn then error("Luna compile: "..tostring(err),0) end
+    return fn()
 end)
-local tower=page("Tháp băng")
-label(tower,"Auto thử lượt tháp tiếp theo khi còn vé vượt mức giữ lại. Cần rebirth 2. Không mua vé; sau khi dừng giữa tháp, thoát bằng giao diện game hoặc tiếp tục lượt hiện tại.")
+env.ConfirmLuna=previousConfirm
+if not loaded then error("Không tải được Luna: "..tostring(result),0) end
+if not alive then if result and result.Destroy then pcall(result.Destroy,result) end; return end
+if type(result)~="table" or type(result.CreateWindow)~="function" then error("Luna không trả về thư viện hợp lệ",0) end
+Luna=result
+destroyLuna=Luna.Destroy
+Luna.Destroy=function() destroy() end
+local palettes={
+    ["Tím ngọc"]={Color3.fromRGB(158,125,247),Color3.fromRGB(104,181,242),Color3.fromRGB(99,213,172)},
+    ["Hoàng hôn"]={Color3.fromRGB(244,152,101),Color3.fromRGB(224,130,180),Color3.fromRGB(161,131,242)},
+    ["Băng xanh"]={Color3.fromRGB(85,154,241),Color3.fromRGB(108,210,233),Color3.fromRGB(174,229,235)}
+}
+local function setPalette(name)
+    local colors=palettes[name] or palettes["Tím ngọc"]
+    Luna.ThemeGradient=ColorSequence.new({ColorSequenceKeypoint.new(0,colors[1]),ColorSequenceKeypoint.new(.5,colors[2]),ColorSequenceKeypoint.new(1,colors[3])})
+    if lunaGui then local remote=lunaGui:FindFirstChild("ThemeRemote"); if remote then remote.Value=not remote.Value end end
+end
+setPalette("Tím ngọc")
+Window=Luna:CreateWindow({
+    Name="Đăng Răng To HUB",
+    Subtitle="+1 Loot To Forge · V7",
+    LogoID="6031097225",
+    LoadingEnabled=false,
+    LoadingTitle="Đăng Răng To HUB",
+    LoadingSubtitle="Farm nhanh · Luna Interface",
+    KeySystem=false,
+    ConfigSettings={ConfigFolder="DangRangToHub"}
+})
+Window.Bind=Enum.KeyCode.RightControl
+local function findLunaGui()
+    local hosts={UIHost}
+    pcall(function() local c=game:GetService("CoreGui"); hosts[#hosts+1]=c; local r=c:FindFirstChild("RobloxGui"); if r then hosts[#hosts+1]=r end end)
+    for _,host in ipairs(hosts) do
+        for _,child in ipairs(host:GetChildren()) do
+            if child:IsA("ScreenGui") and child:FindFirstChild("SmartWindow") then
+                local main=child.SmartWindow
+                if main:FindFirstChild("Title") and main.Title.Title.Text=="Đăng Răng To HUB" then return child end
+            end
+        end
+    end
+end
+lunaGui=findLunaGui()
+if lunaGui then
+    lunaGui.Name="DangRangToLunaV7"
+    connect(lunaGui.Destroying,function() if not destroyed then destroy() end end)
+end
+local function notify(text)
+    if not alive then return end
+    engineMessage=tostring(text)
+    pcall(function() Luna:Notification({Title="Đăng Răng To HUB",Content=engineMessage,Icon="info",ImageSource="Material"}) end)
+end
+local toggles={}
+local synced=false
+local function toggle(tab,title,key,description)
+    local control
+    control=tab:CreateToggle({Name=title,Description=description,CurrentValue=false,Callback=function(value)
+        if synced then return end
+        if not api then
+            notify("Chờ bộ xử lý sẵn sàng")
+            if control then control:UpdateState(false) end
+            return
+        end
+        api.set(key,value)
+    end})
+    toggles[#toggles+1]={control=control,key=key}
+    return control
+end
+local function action(name,...)
+    if not api then notify("Bộ xử lý chưa sẵn sàng"); return end
+    local ok,err=api.call(name,...)
+    if not ok then notify(err or "Đang có tác vụ chạy") end
+end
+local function button(tab,title,callback,description)
+    return tab:CreateButton({Name=title,Description=description,Callback=callback})
+end
+local function slider(tab,title,key,min,max,default,description)
+    local control
+    control=tab:CreateSlider({Name=title,Description=description,Range={min,max},Increment=1,CurrentValue=default,Callback=function(value)
+        if not api then notify("Chờ bộ xử lý sẵn sàng"); return end
+        api.set(key,math.clamp(math.floor(tonumber(value) or default),min,max))
+    end})
+    return control
+end
+local function dropdown(tab,title,key,options,default,description)
+    return tab:CreateDropdown({Name=title,Description=description,Options=options,CurrentOption={default},MultipleOptions=false,Callback=function(values)
+        if not api then notify("Chờ bộ xử lý sẵn sàng"); return end
+        local value=type(values)=="table" and values[1] or values
+        if value then api.set(key,value) end
+    end})
+end
+local function tab(name,icon)
+    return Window:CreateTab({Name=name,Icon=icon,ImageSource="Material",ShowTitle=true})
+end
+local overview=tab("Tổng quan","dashboard")
+overview:CreateParagraph({Title="Đăng Răng To HUB",Text="Farm màn → nhặt nhanh → back → vào lại đúng màn. Bật Farm / Tháp / Luyện để tự bật Auto tổng."})
+local live=overview:CreateParagraph({Title="TRẠNG THÁI",Text=engineMessage})
+local stats=overview:CreateParagraph({Title="PHIÊN CHẠY",Text="Đang chờ dữ liệu…"})
+overview:CreateSection("Điều khiển")
+toggle(overview,"Auto tổng","auto","Tắt để ngừng tác vụ và giữ các lựa chọn đã đặt.")
+button(overview,"Dừng & tắt mọi chức năng",function() if api then api.disableAll() end; resetPlayer(); notify("Đã yêu cầu dừng toàn bộ") end)
+button(overview,"Mặc đồ tốt + nhận Index",function() action("prepare") end,"Chạy khi bộ xử lý rảnh.")
+button(overview,"Làm mới dữ liệu",function() action("refresh") end)
+local farm=tab("Farm màn","sports_esports")
+farm:CreateSection("Vòng farm")
+toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
+slider(farm,"Màn farm · 0 = sâu nhất đã vượt","stage",0,27,0)
+dropdown(farm,"Cách nhặt drop","pickupMode",{"Nhanh","Gần"},"Nhanh","Nhanh: kích hoạt hàng loạt tại chỗ. Gần: đến từng drop khi game yêu cầu khoảng cách.")
+toggle(farm,"Tự đến drop nếu nhặt nhanh thất bại","pickupFallback","Mặc định tắt để tránh teleport chậm. Chỉ dùng nếu game từ chối nhặt tại chỗ.")
+slider(farm,"Giới hạn nhặt · giây","pickupTimeout",4,30,12)
+slider(farm,"Giới hạn chờ Back · giây","backTimeout",2,12,5)
+button(farm,"Farm một lượt",function() action("stageRun") end)
+farm:CreateSection("Nhịp farm")
+farm:CreateInput({Name="Nghỉ giữa lượt · giây",CurrentValue="0.15",PlaceholderText="0.15",Numeric=true,Enter=false,Callback=function(value)
+    local n=tonumber(value); if api and n then api.set("runGap",math.clamp(n,0,5)) end
+end})
+local training=tab("Power & Luck","bolt")
+training:CreateParagraph({Title="Tăng bằng cơ chế game",Text="Train tốt nhất + trang bị tốt + nâng cấp + chủng tộc. Các mục này không ép chỉ số server hay bảo đảm đồ hiếm."})
+training:CreateSection("Luyện sức mạnh")
+toggle(training,"Tự luyện khi không farm màn","train")
+slider(training,"Thời gian mỗi lượt luyện","trainSecs",5,120,20)
+button(training,"Luyện một lượt",function() action("trainPass",api and api.CONFIG.trainSecs or 20) end)
+training:CreateSection("Nâng cấp")
+for _,v in ipairs({{"Tự mua nâng cấp","upgrade"},{"Ưu tiên túi quặng","orePackFirst"},{"Nâng túi quặng","upgOrePack"},{"Nâng Train","upgTrain"},{"Nâng Luck rèn","upgLuck"}}) do toggle(training,v[1],v[2]) end
+training:CreateInput({Name="Coins muốn giữ",CurrentValue="0",Numeric=true,Enter=false,Callback=function(value)
+    local n=tonumber(value); if api and n then api.set("coinKeep",math.max(0,math.floor(n))) end
+end})
+button(training,"Nâng cấp ngay",function() action("upgradePass") end)
+local gear=tab("Rèn & trang bị","construction")
+gear:CreateSection("Tự động")
+for _,v in ipairs({{"Tự rèn","forge"},{"Rèn xen kẽ giáp","forgeArmor"},{"Mặc đồ tốt nhất","equip"},{"Bán đồ yếu","sell"},{"Cường hóa đồ đang mặc","enchant"}}) do toggle(gear,v[1],v[2]) end
+slider(gear,"Quặng mỗi lần rèn · 0 = toàn bộ","orePerForge",0,100,0,"1–3 được xử lý thành tối thiểu 4. Tối đa 4 loại quặng mỗi lượt.")
+dropdown(gear,"Nguyên tố ưu tiên","element",{"Fire","Ice","Thunder","Poison"},"Fire","Ưu tiên cấp đá trước, nguyên tố sau.")
+gear:CreateSection("Thao tác nhanh")
+for _,v in ipairs({{"Rèn ngay","forgePass"},{"Mặc ngay","equipPass"},{"Bán ngay","sellPass"},{"Cường hóa ngay","enchantPass"}}) do local name=v[2]; button(gear,v[1],function() action(name) end) end
+local tower=tab("Tháp băng","ac_unit")
+tower:CreateParagraph({Title="Lặp theo số vé",Text="Cần rebirth 2. Hết lượt sẽ kiểm tra vé để chạy tiếp. Nếu bật cả farm và tháp, các lượt sẽ chạy lần lượt."})
 toggle(tower,"Chạy tháp liên tục","tower")
 toggle(tower,"Nhận vé hằng ngày","dailyTicket")
-input(tower,"Số vé giữ lại","towerKeep",0,0,999)
-local towerOnce=button("Chạy / tiếp tục một lượt tháp",tower); connect(towerOnce.Activated,function() call("towerRun") end)
-local progress=page("Phát triển")
-section(progress,"NÂNG CẤP & PHẦN THƯỞNG")
-for _,v in ipairs({{"Nâng cấp","upgrade"},{"Ưu tiên túi quặng","orePackFirst"},{"Nâng túi quặng","upgOrePack"},{"Nâng Train","upgTrain"},{"Nâng Luck","upgLuck"},{"Nhận Index","index"},{"Tái sinh","rebirth"},{"Quay / chọn chủng tộc","race"},{"Chống AFK","antiAfk"}}) do toggle(progress,v[1],v[2]) end
-input(progress,"Coins giữ lại","coinKeep",0,0,1000000000000)
-for _,v in ipairs({{"Nâng cấp ngay","upgradePass"},{"Nhận Index ngay","indexPass"},{"Tái sinh ngay","rebirthPass"},{"Chủng tộc ngay","racePass"}}) do local b=button(v[1],progress); local action=v[2]; connect(b.Activated,function() call(action) end) end
-local p=page("Người chơi")
-section(p,"DI CHUYỂN")
-local jb=button("Nhảy vô hạn: TẮT",p); connect(jb.Activated,function() jump=not jump; jb.Text="Nhảy vô hạn: "..(jump and "BẬT" or "TẮT") end)
-local nb=button("Xuyên tường: TẮT",p); connect(nb.Activated,function() noclip=not noclip; if not noclip then restoreCollision() end end)
-local sp=make("TextBox",{Size=UDim2.new(1,0,0,40),BackgroundColor3=card,Text="16",PlaceholderText="Tốc độ chạy",TextColor3=white,Font=Enum.Font.Gotham,TextSize=14,ClearTextOnFocus=false},p); round(sp)
-connect(sp.FocusLost,function()
-    local n=tonumber(sp.Text); local h=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-    if not n or not h then return end
-    n=math.clamp(n,1,250); speed=speed or {original=h.WalkSpeed}; speed.value=n; h.WalkSpeed=n; sp.Text=tostring(n)
-end)
-local reset=button("Khôi phục người chơi",p); connect(reset.Activated,resetPlayer)
+slider(tower,"Vé muốn giữ","towerKeep",0,100,0)
+button(tower,"Chạy / tiếp tục một lượt",function() action("towerRun") end)
+button(tower,"Nhận vé hằng ngày ngay",function() action("dailyTicketPass") end)
+local progress=tab("Chủng tộc & Index","auto_awesome")
+toggle(progress,"Quay / chọn chủng tộc","race")
+dropdown(progress,"Ưu tiên chủng tộc","raceProfile",{"Train","Luck","Combat"},"Train","Chỉ đánh giá bonus thật từ dữ liệu game; không tăng tỉ lệ quay.")
+button(progress,"Quay / chọn ngay",function() action("racePass") end)
+progress:CreateSection("Phần thưởng")
+toggle(progress,"Nhận Index","index")
+toggle(progress,"Tự tái sinh","rebirth")
+button(progress,"Nhận Index ngay",function() action("indexPass") end)
+button(progress,"Tái sinh ngay",function() action("rebirthPass") end)
+local movement=tab("Người chơi","person")
+toggle(movement,"Chống AFK","antiAfk")
+local jumpToggle=movement:CreateToggle({Name="Nhảy vô hạn",CurrentValue=false,Callback=function(value) if not synced then jump=value end end})
+local clipToggle=movement:CreateToggle({Name="Xuyên tường",CurrentValue=false,Callback=function(value) if synced then return end; noclip=value; if not value then restoreCollision() end end})
+movement:CreateSlider({Name="Tốc độ chạy",Range={1,250},Increment=1,CurrentValue=16,Callback=function(value)
+    local h=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if h then speed=speed or {original=h.WalkSpeed}; speed.value=math.clamp(value,1,250); h.WalkSpeed=speed.value end
+end})
+button(movement,"Khôi phục người chơi",resetPlayer)
 connect(UIS.JumpRequest,function()
     local h=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
     if jump and h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
@@ -1441,64 +1517,68 @@ connect(player.CharacterAdded,function(character)
     local h=character:WaitForChild("Humanoid",10)
     if alive and h and speed then speed.original=h.WalkSpeed; h.WalkSpeed=speed.value end
 end)
-local dragging=false
-local dragStart,startPos
-connect(header.InputBegan,function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=true; dragStart=i.Position; startPos=root.Position end
+local settings=tab("Giao diện & nhật ký","settings")
+Window.Settings=settings
+settings:CreateDropdown({Name="Màu giao diện",Options={"Tím ngọc","Hoàng hôn","Băng xanh"},CurrentOption={"Tím ngọc"},MultipleOptions=false,Callback=function(values)
+    local value=type(values)=="table" and values[1] or values; setPalette(value)
+end})
+settings:CreateParagraph({Title="Ẩn / mở",Text="Nút × của Luna ẩn cửa sổ, tác vụ vẫn chạy. Right Ctrl hoặc nút mở trên mobile hiện lại. Đóng hoàn toàn bằng nút bên dưới."})
+local logView=settings:CreateParagraph({Title="NHẬT KÝ",Text="Chưa có tác vụ"})
+button(settings,"Sao chép nhật ký",function()
+    if type(setclipboard)~="function" then notify("Executor không hỗ trợ sao chép"); return end
+    local text="Đăng Răng To HUB V7\n"..(api and table.concat(api.STATE.log,"\n") or engineMessage)
+    setclipboard(text); notify("Đã sao chép nhật ký")
 end)
-connect(UIS.InputChanged,function(i)
-    if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
-        local d=i.Position-dragStart; root.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+button(settings,"Đóng Hub & dừng bộ xử lý",destroy)
+settings:CreateParagraph({Title="Nguồn giao diện",Text="Luna Interface Suite · Nebula Softworks. Phiên bản được cố định để tránh đổi API ngoài ý muốn."})
+overview:Activate()
+task.spawn(function()
+    local ok,result=pcall(CreateBundledEngine)
+    if not alive then if ok and result and result.shutdown then result.shutdown() end; return end
+    if ok and type(result)=="table" and result.version==7 and result.ready then
+        api=result; notify("Bộ xử lý V7 sẵn sàng. Bật Farm hoặc Tháp để chạy.")
+    else
+        engineMessage="Lỗi bộ xử lý: "..tostring(result); notify(engineMessage); warn(engineMessage)
     end
 end)
-connect(UIS.InputEnded,function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
-local function destroy()
-    alive=false
-    if api then api.shutdown() end
-    resetPlayer()
-    for _,c in ipairs(connections) do c:Disconnect() end
-    for _,t in pairs(activeTweens) do t:Cancel() end
-    gui:Destroy()
+local function short(n)
+    n=tonumber(n) or 0
+    for _,v in ipairs({{1e12,"T"},{1e9,"B"},{1e6,"M"},{1e3,"K"}}) do if math.abs(n)>=v[1] then return string.format("%.1f%s",n/v[1],v[2]) end end
+    return tostring(math.floor(n))
 end
-_G.__LTF_HUB_V6={destroy=destroy}
-lastViewport=nil
-resize()
-connect(close.Activated,destroy)
-connect(UIS.InputBegan,function(i,processed)
-    if not processed and i.KeyCode==Enum.KeyCode.RightControl then root.Visible=not root.Visible; open.Visible=not root.Visible end
-end)
 task.spawn(function()
-    local ok,result=pcall(function()
-        local old=_G.__LOOTTOFORGE_DBG
-        if old and old.version==6 and old.ready then old.disableAll(); return old end
-        return CreateBundledEngine()
-    end)
-    if not alive then if ok and result and result.shutdown then result.shutdown() end; return end
-    if ok and type(result)=="table" and result.version==6 and result.ready then api=result; inform("Bộ xử lý sẵn sàng")
-    else inform("Lỗi tải: "..tostring(result)); warn(loading) end
-end)
-task.spawn(function()
+    local lastLive,lastStats,lastLog
     while alive do
-        resize()
-        if api then
-            for _,control in ipairs(controls) do
-                local on=api.CONFIG[control.key]
-                if control.last~=on then
-                    control.last=on
-                    animate(control.track,{BackgroundColor3=on and accent or Color3.fromRGB(59,58,70)})
-                    animate(control.knob,{Position=UDim2.fromOffset(on and 19 or 3,3),BackgroundColor3=on and white or Color3.fromRGB(168,165,183)})
+        local ok,err=pcall(function()
+            synced=true
+            if api then
+                for _,entry in ipairs(toggles) do
+                    local value=api.CONFIG[entry.key]
+                    if entry.control.CurrentValue~=value then entry.control:UpdateState(value) end
                 end
             end
-            element.Text="Nguyên tố: "..api.CONFIG.element
-            local s=api.STATE
-            connectionDot.BackgroundColor3=s.busy and green or accent
-            metricValues[1].Text=compact(s.level); metricValues[2].Text=compact(s.rebirth); metricValues[3].Text=compact(s.coin)
-            footer.Text=os.clock()<messageUntil and loading or ((s.busy and "ĐANG CHẠY · " or "SẴN SÀNG · ")..s.phase.."\n"..s.note)
-            status.Text=string.format("Màn %s   •   Quặng %s   •   Vé %s\nFarm: %s lượt   /   Tháp: %s lượt thoát\n%s\n%s",s.stage,s.ore,s.tickets,s.runs,s.towerRuns,s.lastRun,s.lastTower)
-        else footer.Text=loading end
-        jb.Text="Nhảy vô hạn: "..(jump and "BẬT" or "TẮT")
-        nb.Text="Xuyên tường: "..(noclip and "BẬT" or "TẮT")
-        task.wait(.3)
+            if jumpToggle.CurrentValue~=jump then jumpToggle:UpdateState(jump) end
+            if clipToggle.CurrentValue~=noclip then clipToggle:UpdateState(noclip) end
+            synced=false
+            local liveText=engineMessage
+            local statsText="Đang chờ dữ liệu…"
+            local logText=engineMessage
+            if api then
+                local s=api.STATE
+                liveText=(s.busy and "ĐANG CHẠY · " or "SẴN SÀNG · ")..s.phase.."\n"..s.note
+                local minutes=math.max((os.clock()-s.startedAt)/60,1/60)
+                statsText=string.format("Level %s  ·  Rebirth %s  ·  Coins %s\nQuặng %s  ·  Vé %s  ·  Đá %s\nFarm %d lượt  ·  +%d quặng  ·  %.1f quặng/phút\nNhặt %.2fs  ·  Back %.2fs  ·  Tháp thoát %d lượt\n%s",short(s.level),s.rebirth,short(s.coin),s.ore,s.tickets,s.stones,s.runs,s.oreGot,s.oreGot/minutes,s.pickupSecs,s.backSecs,s.towerRuns,s.lastRun)
+                local recent={}
+                for i=math.max(1,#s.log-5),#s.log do recent[#recent+1]=s.log[i] end
+                logText=#recent>0 and table.concat(recent,"\n") or "Chưa có tác vụ"
+            end
+            if liveText~=lastLive then live:Set({Text=liveText}); lastLive=liveText end
+            if statsText~=lastStats then stats:Set({Text=statsText}); lastStats=statsText end
+            if logText~=lastLog then logView:Set({Text=logText}); lastLog=logText end
+        end)
+        synced=false
+        if not ok then warn("Hub display: "..tostring(err)) end
+        task.wait(.5)
     end
 end)
 
