@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.3-LUNA"
+local BUILD="DRT-7.4-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -1221,6 +1221,54 @@ local actions={stageRun=stageRun,trainPass=trainPass,forgePass=forgePass,equipPa
 local queue={}
 local nextAllowed={}
 local connections={}
+local auraEpoch=0
+local bossCombo=0
+local function nearbyWorldBosses()
+    local root=hrp()
+    local folder=Workspace:FindFirstChild("EnemyFolder_Server")
+    local ids={}
+    if not root or not folder then return ids end
+    local radius=math.clamp(tonumber(CONFIG.killauraRange) or 100,10,150)
+    for _,enemy in ipairs(folder:GetChildren()) do
+        local id=enemy:GetAttribute("EnemyID")
+        if enemy:IsA("Model") and type(id)=="string" and id:match("^WorldBoss_") and not enemy:GetAttribute("Dead") then
+            local ok,pos=pcall(function() return enemy:GetPivot().Position end)
+            if ok and (pos-root.Position).Magnitude<=radius then ids[#ids+1]=enemy.Name end
+        end
+    end
+    return ids
+end
+local function bossAuraPass()
+    if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
+    if #nearbyWorldBosses()==0 then return end
+    local players=Workspace:FindFirstChild("PlayerFolder")
+    local model=players and players:FindFirstChild(plr.Name)
+    local weapon=model and model:FindFirstChild("WEAPON")
+    local weaponID=weapon and weapon:GetAttribute("ID")
+    -- Only the G weapon combo was confirmed by the captured normal attacks.
+    if type(weaponID)~="string" or not weaponID:match("^G_") then
+        if STATE.bossAuraStatus~="unsupported" then note("Boss: chưa có combo xác nhận cho vũ khí đang cầm") end
+        STATE.bossAuraStatus="unsupported"; return
+    end
+    local remote=ReplicatedStorage:FindFirstChild("Remote")
+    local attack=remote and remote:FindFirstChild("Attack")
+    local use=attack and attack:FindFirstChild("UseAnyATKRE")
+    local hit=attack and attack:FindFirstChild("AttackEnemyServiceRE")
+    if not use or not hit or not use:IsA("RemoteEvent") or not hit:IsA("RemoteEvent") then return end
+    local epoch=auraEpoch
+    bossCombo=bossCombo%3+1
+    local skill="G_ATK_"..bossCombo
+    if STATE.bossAuraStatus~="active" then note("Killaura boss: combo G; sát thương do game xử lý") end
+    STATE.bossAuraStatus="active"
+    use:FireServer(skill,Workspace:GetServerTimeNow())
+    task.wait(bossCombo==3 and 0.30 or 0.22)
+    if not CONFIG.killaura or epoch~=auraEpoch or GEN~=_G.__LOOTTOFORGE or dead() then return end
+    if not weapon.Parent or weapon:GetAttribute("ID")~=weaponID then return end
+    local ids=nearbyWorldBosses()
+    if #ids>0 then
+        hit:FireServer(ids,{Phase=1,Attacker=plr,SkillID=skill},Workspace:GetServerTimeNow())
+    end
+end
 local function killauraPass()
     if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
     local root=hrp()
@@ -1241,11 +1289,13 @@ function API.stop()
     CONFIG.auto=false; stopEpoch=stopEpoch+1; table.clear(queue); unpin(); farmStage=nil
 end
 function API.disableAll()
+    auraEpoch=auraEpoch+1
     API.stop()
     for k,v in pairs(CONFIG) do if type(v)=="boolean" and k~="pickupFallback" then CONFIG[k]=false end end
 end
 function API.set(k,v)
     if CONFIG[k]==nil then return false end
+    if k=="killaura" then auraEpoch=auraEpoch+1; bossCombo=0; STATE.bossAuraStatus=nil end
     if k=="auto" and not v then API.stop() else CONFIG[k]=v end
     if k=="stage" then farmStage=nil end
     if v==true and (k=="farm" or k=="tower" or k=="train") then
@@ -1288,6 +1338,17 @@ end
 refresh(true)
 API.ready=true
 _G.__LOOTTOFORGE_DBG=API
+task.spawn(function()
+    while GEN==_G.__LOOTTOFORGE do
+        local started=os.clock()
+        local ok,err=pcall(bossAuraPass)
+        if not ok then
+            CONFIG.killaura=false; auraEpoch=auraEpoch+1
+            note("Killaura boss đã dừng: "..tostring(err))
+        end
+        task.wait(math.max(0.1,0.65-(os.clock()-started)))
+    end
+end)
 local auraElapsed=0
 connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     auraElapsed=auraElapsed+dt
@@ -1419,7 +1480,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7.3",
+    Subtitle="+1 Loot To Forge · V7.4",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1503,7 +1564,7 @@ button(overview,"Mặc đồ tốt + nhận Index",function() action("prepare") 
 button(overview,"Làm mới dữ liệu",function() action("refresh") end)
 local farm=tab("Farm màn","sports_esports")
 farm:CreateSection("Killaura thủ công")
-toggle(farm,"Bật Killaura","killaura","Đánh quái quanh nhân vật bằng cơ chế của farm. Bật riêng, không cần Auto tổng; không tự teleport hay Back.")
+toggle(farm,"Bật Killaura","killaura","Quái màn: cách đánh của farm. World Boss: tự combo G đã xác nhận; damage do game xử lý. Bật riêng, không tự teleport hay Back.")
 slider(farm,"Phạm vi Killaura","killauraRange",10,150,100)
 farm:CreateSection("Vòng farm")
 toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
@@ -1660,4 +1721,5 @@ else
         if _G.__LTF_HUB_V6 and _G.__LTF_HUB_V6.destroy then _G.__LTF_HUB_V6.destroy() end
     end)
 end
+
 
