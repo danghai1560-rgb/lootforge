@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.6-LUNA"
+local BUILD="DRT-7.7-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -48,6 +48,7 @@ _G.__LOOTTOFORGE = GEN
 --------------------------------------------------------------------------------
 
 local CONFIG = {
+    attackDamage = 1e100,
     autoWorldBoss = false,
     killaura = false,
     killauraRange = 100,
@@ -642,6 +643,11 @@ local function returnStage(oreBefore,pos)
     return got
 end
 local farmStage
+local function attackDamage()
+    local value=tonumber(CONFIG.attackDamage)
+    if not value or value~=value or value==math.huge or value<1 then return 1e100 end
+    return math.min(value,1e300)
+end
 local function stageRun()
     STATE.pickupBlocked=false
     local runStart=os.clock()
@@ -672,7 +678,7 @@ local function stageRun()
             emptySince=nil
             for _,m in ipairs(enemies) do
                 checkpoint(); seen[m]=true
-                hitBE:Fire(m.Name,1e30,{Damage=1e30})
+                hitBE:Fire(m.Name,attackDamage(),{Damage=attackDamage()})
             end
         end
         pause(0.25)
@@ -966,6 +972,33 @@ local function dailyTicketPass()
 	end
 end
 
+local function towerAttackPass()
+    local sent,failed=0,0
+    local root=hrp()
+    for _,name in ipairs({"EnemyFolder","EnemyFolder_Server"}) do
+        local folder=Workspace:FindFirstChild(name)
+        if folder then
+            for _,enemy in ipairs(folder:GetChildren()) do
+                checkpoint()
+                local id=enemy:GetAttribute("EnemyID")
+                if enemy:IsA("Model") and not enemy:GetAttribute("Dead") and
+                    not (type(id)=="string" and id:match("^WorldBoss_")) then
+                    local nearby=name=="EnemyFolder"
+                    if not nearby and root then
+                        local ok,pos=pcall(function() return enemy:GetPivot().Position end)
+                        nearby=ok and (pos-root.Position).Magnitude<=180
+                    end
+                    if nearby then
+                        local damage=attackDamage()
+                        local ok=pcall(function() hitBE:Fire(enemy.Name,damage,{Damage=damage}) end)
+                        if ok then sent=sent+1 else failed=failed+1 end
+                    end
+                end
+            end
+        end
+    end
+    return sent,failed
+end
 local function towerRun()
     checkpoint(); refresh(true)
     if dead() then error("Character unavailable",0) end
@@ -981,20 +1014,28 @@ local function towerRun()
     local stones0=STATE.stones
     local start=os.clock()
     STATE.phase="Tower running"
-    while plr:GetAttribute("Dungeoning") do
+    local outsideSince=nil
+    local reportAt=0
+    while true do
         checkpoint()
+        if not plr:GetAttribute("Dungeoning") then
+            outsideSince=outsideSince or os.clock()
+            if os.clock()-outsideSince>=1 then break end
+            pause(0.2)
+        else
+        outsideSince=nil
         if dead() then error("Character died in tower",0) end
-        if os.clock()-start>300 then error("Tower timeout; resume or exit in game",0) end
-        local ef=Workspace:FindFirstChild("EnemyFolder")
-        if ef then
-            for _,m in ipairs(ef:GetChildren()) do
-                checkpoint()
-                if not m:GetAttribute("Dead") then hitBE:Fire(m.Name,1e30,{Damage=1e30}) end
-            end
+        if os.clock()-start>600 then error("Tower timeout; resume or exit in game",0) end
+        local sent,failed=towerAttackPass()
+        STATE.towerTargets=sent
+        if os.clock()>=reportAt then
+            note("Tháp: gửi đòn cho "..sent.." quái; lỗi "..failed.."; damage "..tostring(attackDamage()))
+            reportAt=os.clock()+8
         end
-        pause(0.3)
+        pause(0.2)
+        end
     end
-    pause(2); refresh(true)
+    pause(0.5); refresh(true)
     STATE.towerRuns=STATE.towerRuns+1
     STATE.lastTower=string.format("Exited after %ds, +%d stones; %d tickets",math.floor(os.clock()-start),STATE.stones-stones0,STATE.tickets)
     note(STATE.lastTower)
@@ -1241,6 +1282,7 @@ local function atWorldBoss()
     return ok and (pos-root.Position).Magnitude<180
 end
 local function bossEntryHold()
+    if plr:GetAttribute("Dungeoning") then return false end
     return CONFIG.autoWorldBoss and bossAvailable and
         (atWorldBoss() or os.clock()<bossPendingUntil or bossAttempts<3)
 end
@@ -1290,12 +1332,12 @@ local function bossAuraPass()
     local ids=nearbyWorldBosses()
     if #ids==0 then return end
     if STATE.bossAuraStatus~="direct-hit" then
-        note("Killaura boss: đang thử EnemyHitBE với damage 1e30 như farm màn")
+        note("Killaura boss: EnemyHitBE với damage "..tostring(attackDamage()).." như farm màn")
     end
     STATE.bossAuraStatus="direct-hit"
     for _,id in ipairs(ids) do
         if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
-        hitBE:Fire(id,1e30,{Damage=1e30})
+        hitBE:Fire(id,attackDamage(),{Damage=attackDamage()})
     end
 end
 local function killauraPass()
@@ -1309,7 +1351,7 @@ local function killauraPass()
         if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
             local ok,pos=pcall(function() return enemy:GetPivot().Position end)
             if ok and math.abs(pos.Z-root.Position.Z)<80 and (pos-root.Position).Magnitude<=radius then
-                pcall(function() hitBE:Fire(enemy.Name,1e30,{Damage=1e30}) end)
+                pcall(function() hitBE:Fire(enemy.Name,attackDamage(),{Damage=attackDamage()}) end)
             end
         end
     end
@@ -1352,7 +1394,7 @@ local function run(name,args,feature,isAuto)
     unpin()
     if name=="stageRun" and not ok and not STATE.pickupBlocked and not plr:GetAttribute("Dungeoning") then pcall(function() exitBE:Fire(true) end) end
     STATE.busy=false; currentFeature=nil; automatic=false; STATE.phase="idle"
-    if name=="towerRun" then nextAllowed[name]=os.clock()+5 end
+    if name=="towerRun" then nextAllowed[name]=os.clock()+(ok and 0.75 or 5) end
     if not ok then
         note(tostring(err))
         if tostring(err)~="Stopped" then nextAllowed[name]=os.clock()+5 end
@@ -1395,6 +1437,8 @@ task.spawn(function()
     while GEN==_G.__LOOTTOFORGE do
         if #queue>0 then
             local job=table.remove(queue,1); run(job.name,job.args,nil,false)
+        elseif CONFIG.auto and CONFIG.tower and plr:GetAttribute("Dungeoning") and os.clock()>=(nextAllowed.towerRun or 0) then
+            run("towerRun",nil,"tower",true)
         elseif CONFIG.auto and not bossEntryHold() then
             if os.clock()>=supportDue and not plr:GetAttribute("Dungeoning") then
                 for _,job in ipairs(support) do
@@ -1511,7 +1555,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7.6",
+    Subtitle="+1 Loot To Forge · V7.7",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1595,7 +1639,7 @@ button(overview,"Mặc đồ tốt + nhận Index",function() action("prepare") 
 button(overview,"Làm mới dữ liệu",function() action("refresh") end)
 local farm=tab("Farm màn","sports_esports")
 farm:CreateSection("Killaura thủ công")
-toggle(farm,"Bật Killaura","killaura","Dùng EnemyHitBE với damage 1e30 giống farm màn cho quái và World Boss trong phạm vi. Boss: đang thử nghiệm, chưa xác nhận một hit.")
+toggle(farm,"Bật Killaura","killaura","Dùng EnemyHitBE với damage 1e100 giống farm màn cho quái và World Boss trong phạm vi. Boss: đang thử nghiệm, chưa xác nhận một hit.")
 slider(farm,"Phạm vi Killaura","killauraRange",10,150,100)
 farm:CreateSection("Vòng farm")
 toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
@@ -1755,6 +1799,7 @@ else
         if _G.__LTF_HUB_V6 and _G.__LTF_HUB_V6.destroy then _G.__LTF_HUB_V6.destroy() end
     end)
 end
+
 
 
 
