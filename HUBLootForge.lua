@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.4-LUNA"
+local BUILD="DRT-7.6-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -48,6 +48,7 @@ _G.__LOOTTOFORGE = GEN
 --------------------------------------------------------------------------------
 
 local CONFIG = {
+    autoWorldBoss = false,
     killaura = false,
     killauraRange = 100,
     pickupMode = "Nhanh",
@@ -1221,8 +1222,54 @@ local actions={stageRun=stageRun,trainPass=trainPass,forgePass=forgePass,equipPa
 local queue={}
 local nextAllowed={}
 local connections={}
-local auraEpoch=0
-local bossCombo=0
+local worldBossRemote=ReplicatedStorage:FindFirstChild("Remote")
+worldBossRemote=worldBossRemote and worldBossRemote:FindFirstChild("WorldBoss")
+local bossAvailable,bossSeen=false,nil
+local bossAttempts,bossRetryAt,bossPendingUntil=0,0,0
+local function liveWorldBoss()
+    local folder=Workspace:FindFirstChild("EnemyFolder_Server")
+    if not folder then return end
+    for _,enemy in ipairs(folder:GetChildren()) do
+        local id=enemy:GetAttribute("EnemyID")
+        if enemy:IsA("Model") and type(id)=="string" and id:match("^WorldBoss_") and not enemy:GetAttribute("Dead") then return enemy end
+    end
+end
+local function atWorldBoss()
+    local boss,root=liveWorldBoss(),hrp()
+    if not boss or not root then return false end
+    local ok,pos=pcall(function() return boss:GetPivot().Position end)
+    return ok and (pos-root.Position).Magnitude<180
+end
+local function bossEntryHold()
+    return CONFIG.autoWorldBoss and bossAvailable and
+        (atWorldBoss() or os.clock()<bossPendingUntil or bossAttempts<3)
+end
+local function worldBossEntryPass()
+    if not CONFIG.autoWorldBoss or GEN~=_G.__LOOTTOFORGE then return end
+    local boss=liveWorldBoss()
+    if boss and boss~=bossSeen then
+        bossSeen=boss;bossAvailable=true;bossAttempts=0;bossRetryAt=0
+    end
+    if not bossAvailable or atWorldBoss() or STATE.busy or dead() or plr:GetAttribute("Dungeoning") then return end
+    if bossAttempts>=3 or os.clock()<bossRetryAt then return end
+    local enter=worldBossRemote and worldBossRemote:FindFirstChild("IntoWorldBossFight")
+    if not enter or not enter:IsA("RemoteEvent") then return end
+    bossAttempts=bossAttempts+1;bossRetryAt=os.clock()+20;bossPendingUntil=os.clock()+10
+    enter:FireServer()
+    note("World Boss: đã gửi yêu cầu vào trận ("..bossAttempts.."/3)")
+end
+if worldBossRemote then
+    for _,name in ipairs({"BossSpawnRE","BossDeadRE","BossEscapeRE"}) do
+        local event=worldBossRemote:FindFirstChild(name)
+        if event and event:IsA("RemoteEvent") then
+            connections[#connections+1]=event.OnClientEvent:Connect(function()
+                if GEN~=_G.__LOOTTOFORGE then return end
+                bossAvailable=name=="BossSpawnRE"
+                bossSeen=liveWorldBoss();bossAttempts=0;bossRetryAt=0;bossPendingUntil=0
+            end)
+        end
+    end
+end
 local function nearbyWorldBosses()
     local root=hrp()
     local folder=Workspace:FindFirstChild("EnemyFolder_Server")
@@ -1240,33 +1287,15 @@ local function nearbyWorldBosses()
 end
 local function bossAuraPass()
     if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
-    if #nearbyWorldBosses()==0 then return end
-    local players=Workspace:FindFirstChild("PlayerFolder")
-    local model=players and players:FindFirstChild(plr.Name)
-    local weapon=model and model:FindFirstChild("WEAPON")
-    local weaponID=weapon and weapon:GetAttribute("ID")
-    -- Only the G weapon combo was confirmed by the captured normal attacks.
-    if type(weaponID)~="string" or not weaponID:match("^G_") then
-        if STATE.bossAuraStatus~="unsupported" then note("Boss: chưa có combo xác nhận cho vũ khí đang cầm") end
-        STATE.bossAuraStatus="unsupported"; return
-    end
-    local remote=ReplicatedStorage:FindFirstChild("Remote")
-    local attack=remote and remote:FindFirstChild("Attack")
-    local use=attack and attack:FindFirstChild("UseAnyATKRE")
-    local hit=attack and attack:FindFirstChild("AttackEnemyServiceRE")
-    if not use or not hit or not use:IsA("RemoteEvent") or not hit:IsA("RemoteEvent") then return end
-    local epoch=auraEpoch
-    bossCombo=bossCombo%3+1
-    local skill="G_ATK_"..bossCombo
-    if STATE.bossAuraStatus~="active" then note("Killaura boss: combo G; sát thương do game xử lý") end
-    STATE.bossAuraStatus="active"
-    use:FireServer(skill,Workspace:GetServerTimeNow())
-    task.wait(bossCombo==3 and 0.30 or 0.22)
-    if not CONFIG.killaura or epoch~=auraEpoch or GEN~=_G.__LOOTTOFORGE or dead() then return end
-    if not weapon.Parent or weapon:GetAttribute("ID")~=weaponID then return end
     local ids=nearbyWorldBosses()
-    if #ids>0 then
-        hit:FireServer(ids,{Phase=1,Attacker=plr,SkillID=skill},Workspace:GetServerTimeNow())
+    if #ids==0 then return end
+    if STATE.bossAuraStatus~="direct-hit" then
+        note("Killaura boss: đang thử EnemyHitBE với damage 1e30 như farm màn")
+    end
+    STATE.bossAuraStatus="direct-hit"
+    for _,id in ipairs(ids) do
+        if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
+        hitBE:Fire(id,1e30,{Damage=1e30})
     end
 end
 local function killauraPass()
@@ -1289,13 +1318,13 @@ function API.stop()
     CONFIG.auto=false; stopEpoch=stopEpoch+1; table.clear(queue); unpin(); farmStage=nil
 end
 function API.disableAll()
-    auraEpoch=auraEpoch+1
     API.stop()
     for k,v in pairs(CONFIG) do if type(v)=="boolean" and k~="pickupFallback" then CONFIG[k]=false end end
 end
 function API.set(k,v)
     if CONFIG[k]==nil then return false end
-    if k=="killaura" then auraEpoch=auraEpoch+1; bossCombo=0; STATE.bossAuraStatus=nil end
+    if k=="killaura" then STATE.bossAuraStatus=nil end
+    if k=="autoWorldBoss" then bossAttempts=0;bossRetryAt=0;bossPendingUntil=0 end
     if k=="auto" and not v then API.stop() else CONFIG[k]=v end
     if k=="stage" then farmStage=nil end
     if v==true and (k=="farm" or k=="tower" or k=="train") then
@@ -1341,9 +1370,11 @@ _G.__LOOTTOFORGE_DBG=API
 task.spawn(function()
     while GEN==_G.__LOOTTOFORGE do
         local started=os.clock()
+        local entryOK,entryError=pcall(worldBossEntryPass)
+        if not entryOK then CONFIG.autoWorldBoss=false;note("Tự vào boss đã dừng: "..tostring(entryError)) end
         local ok,err=pcall(bossAuraPass)
         if not ok then
-            CONFIG.killaura=false; auraEpoch=auraEpoch+1
+            CONFIG.killaura=false
             note("Killaura boss đã dừng: "..tostring(err))
         end
         task.wait(math.max(0.1,0.65-(os.clock()-started)))
@@ -1364,7 +1395,7 @@ task.spawn(function()
     while GEN==_G.__LOOTTOFORGE do
         if #queue>0 then
             local job=table.remove(queue,1); run(job.name,job.args,nil,false)
-        elseif CONFIG.auto then
+        elseif CONFIG.auto and not bossEntryHold() then
             if os.clock()>=supportDue and not plr:GetAttribute("Dungeoning") then
                 for _,job in ipairs(support) do
                     if CONFIG.auto and CONFIG[job[1]] and os.clock()>=(nextAllowed[job[2]] or 0) then run(job[2],nil,job[1],true) end
@@ -1480,7 +1511,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7.4",
+    Subtitle="+1 Loot To Forge · V7.6",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1564,7 +1595,7 @@ button(overview,"Mặc đồ tốt + nhận Index",function() action("prepare") 
 button(overview,"Làm mới dữ liệu",function() action("refresh") end)
 local farm=tab("Farm màn","sports_esports")
 farm:CreateSection("Killaura thủ công")
-toggle(farm,"Bật Killaura","killaura","Quái màn: cách đánh của farm. World Boss: tự combo G đã xác nhận; damage do game xử lý. Bật riêng, không tự teleport hay Back.")
+toggle(farm,"Bật Killaura","killaura","Dùng EnemyHitBE với damage 1e30 giống farm màn cho quái và World Boss trong phạm vi. Boss: đang thử nghiệm, chưa xác nhận một hit.")
 slider(farm,"Phạm vi Killaura","killauraRange",10,150,100)
 farm:CreateSection("Vòng farm")
 toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
@@ -1599,6 +1630,9 @@ dropdown(gear,"Nguyên tố ưu tiên","element",{"Fire","Ice","Thunder","Poison
 gear:CreateSection("Thao tác nhanh")
 for _,v in ipairs({{"Rèn ngay","forgePass"},{"Mặc ngay","equipPass"},{"Bán ngay","sellPass"},{"Cường hóa ngay","enchantPass"}}) do local name=v[2]; button(gear,v[1],function() action(name) end) end
 local tower=tab("Tháp băng","ac_unit")
+tower:CreateSection("World Boss")
+toggle(tower,"Tự vào khi World Boss xuất hiện","autoWorldBoss","Bật riêng với Auto tổng. Theo dõi boss xuất hiện hoặc boss đã tải; chờ lượt farm/tháp hiện tại xong rồi gửi yêu cầu vào. Tối đa 3 lần mỗi đợt boss.")
+tower:CreateSection("Tháp băng")
 tower:CreateParagraph({Title="Lặp theo số vé",Text="Cần rebirth 2. Hết lượt sẽ kiểm tra vé để chạy tiếp. Nếu bật cả farm và tháp, các lượt sẽ chạy lần lượt."})
 toggle(tower,"Chạy tháp liên tục","tower")
 toggle(tower,"Nhận vé hằng ngày","dailyTicket")
@@ -1721,5 +1755,7 @@ else
         if _G.__LTF_HUB_V6 and _G.__LTF_HUB_V6.destroy then _G.__LTF_HUB_V6.destroy() end
     end)
 end
+
+
 
 
