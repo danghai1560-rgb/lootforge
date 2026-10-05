@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.2-LUNA"
+local BUILD="DRT-7.3-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -48,6 +48,8 @@ _G.__LOOTTOFORGE = GEN
 --------------------------------------------------------------------------------
 
 local CONFIG = {
+    killaura = false,
+    killauraRange = 100,
     pickupMode = "Nhanh",
     pickupFallback = true,
     pickupTimeout = 12,
@@ -1219,6 +1221,22 @@ local actions={stageRun=stageRun,trainPass=trainPass,forgePass=forgePass,equipPa
 local queue={}
 local nextAllowed={}
 local connections={}
+local function killauraPass()
+    if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE or dead() then return end
+    local root=hrp()
+    local folder=Workspace:FindFirstChild("EnemyFolder")
+    if not root or not folder then return end
+    local radius=math.clamp(tonumber(CONFIG.killauraRange) or 100,10,150)
+    for _,enemy in ipairs(folder:GetChildren()) do
+        if not CONFIG.killaura or GEN~=_G.__LOOTTOFORGE then return end
+        if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
+            local ok,pos=pcall(function() return enemy:GetPivot().Position end)
+            if ok and math.abs(pos.Z-root.Position.Z)<80 and (pos-root.Position).Magnitude<=radius then
+                pcall(function() hitBE:Fire(enemy.Name,1e30,{Damage=1e30}) end)
+            end
+        end
+    end
+end
 function API.stop()
     CONFIG.auto=false; stopEpoch=stopEpoch+1; table.clear(queue); unpin(); farmStage=nil
 end
@@ -1270,6 +1288,13 @@ end
 refresh(true)
 API.ready=true
 _G.__LOOTTOFORGE_DBG=API
+local auraElapsed=0
+connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
+    auraElapsed=auraElapsed+dt
+    if auraElapsed<0.25 then return end
+    auraElapsed=0
+    killauraPass()
+end)
 task.spawn(function()
     local support={{"forge","forgePass"},{"index","indexPass"},{"equip","equipPass"},
         {"enchant","enchantPass"},{"sell","sellPass"},{"upgrade","upgradePass"},
@@ -1394,7 +1419,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7",
+    Subtitle="+1 Loot To Forge · V7.3",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1477,6 +1502,9 @@ button(overview,"Dừng & tắt mọi chức năng",function() if api then api.d
 button(overview,"Mặc đồ tốt + nhận Index",function() action("prepare") end,"Chạy khi bộ xử lý rảnh.")
 button(overview,"Làm mới dữ liệu",function() action("refresh") end)
 local farm=tab("Farm màn","sports_esports")
+farm:CreateSection("Killaura thủ công")
+toggle(farm,"Bật Killaura","killaura","Đánh quái quanh nhân vật bằng cơ chế của farm. Bật riêng, không cần Auto tổng; không tự teleport hay Back.")
+slider(farm,"Phạm vi Killaura","killauraRange",10,150,100)
 farm:CreateSection("Vòng farm")
 toggle(farm,"Farm màn liên tục","farm","Giữ đúng màn đã chọn; không luyện xen giữa lượt farm.")
 slider(farm,"Màn farm · 0 = sâu nhất đã vượt","stage",0,27,0)
@@ -1632,3 +1660,4 @@ else
         if _G.__LTF_HUB_V6 and _G.__LTF_HUB_V6.destroy then _G.__LTF_HUB_V6.destroy() end
     end)
 end
+
