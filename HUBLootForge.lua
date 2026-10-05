@@ -1,6 +1,6 @@
 -- Đăng Răng To HUB v7 — GitHub RAW, bundled engine + UI.
 -- Startup diagnostics stay visible if the UI fails to construct.
-local BUILD="DRT-7.7-LUNA"
+local BUILD="DRT-7.9-LUNA"
 print("["..BUILD.."] Raw script received; starting")
 local bootLog={build=BUILD,status="starting"}
 _G.__DRT_BOOT=bootLog
@@ -105,6 +105,16 @@ local STATE = {
 
 STATE.startedAt=os.clock()
 STATE.log={}
+STATE.alerts={}
+local alertTimes,alertID={},0
+local function alert(key,text,cooldown)
+    local now=os.clock()
+    if alertTimes[key] and now-alertTimes[key]<(cooldown or 60) then return false end
+    alertTimes[key]=now;alertID=alertID+1
+    STATE.alerts[#STATE.alerts+1]={id=alertID,key=key,text=text}
+    if #STATE.alerts>24 then table.remove(STATE.alerts,1) end
+    return true
+end
 STATE.pickupSecs=0; STATE.backSecs=0; STATE.runSecs=0; STATE.pickupRequests=0
 local function note(t)
     STATE.note=tostring(t)
@@ -1000,20 +1010,36 @@ local function towerAttackPass()
     return sent,failed
 end
 local function towerRun()
-    checkpoint(); refresh(true)
+    checkpoint(); STATE.phase="Tower checking"
+    refresh(true)
+    STATE.towerBlocked=false
     if dead() then error("Character unavailable",0) end
     if not plr:GetAttribute("Dungeoning") then
-        if STATE.rebirth<2 then note("Tháp yêu cầu rebirth 2"); return end
-        if STATE.tickets<=CONFIG.towerKeep then note("Không còn vé tháp vượt mức giữ lại"); return end
+        if STATE.rebirth<2 then
+            STATE.towerBlocked=true;STATE.towerStatus="Cần rebirth 2"
+            if alert("tower-rebirth","Chưa vào được tháp: cần rebirth 2.") then note(STATE.towerStatus) end
+            return
+        end
+        if STATE.tickets<=CONFIG.towerKeep then
+            STATE.towerBlocked=true
+            STATE.towerStatus="Vé còn "..STATE.tickets.."; đang giữ "..CONFIG.towerKeep
+            local message=STATE.tickets<=0 and "Hết vé tháp! Bật Nhận vé hằng ngày hoặc kiếm thêm vé để chạy tiếp."
+                or "Không vào tháp vì vé còn "..STATE.tickets..", bằng hoặc thấp hơn mức giữ lại "..CONFIG.towerKeep.."."
+            if alert(STATE.tickets<=0 and "tower-no-ticket" or "tower-reserve",message) then note("Tháp: "..STATE.towerStatus) end
+            return
+        end
         unpin()
+        STATE.phase="Tower entering"; STATE.towerStatus="Đang gửi yêu cầu vào tháp"; note(STATE.towerStatus)
         invoke(R_dungeonInto,1)
         local start=os.clock()
         while not plr:GetAttribute("Dungeoning") and os.clock()-start<10 do pause(0.2) end
-        if not plr:GetAttribute("Dungeoning") then error("Tower entry refused",0) end
+        if not plr:GetAttribute("Dungeoning") then STATE.towerStatus="Game chưa xác nhận vào tháp"; error("Tower entry refused",0) end
+        alert("tower-entered","Đã vào tháp. Tự động đánh đang chạy.",10)
     end
     local stones0=STATE.stones
     local start=os.clock()
     STATE.phase="Tower running"
+    STATE.towerStatus="Đang đánh trong tháp"
     local outsideSince=nil
     local reportAt=0
     while true do
@@ -1039,6 +1065,9 @@ local function towerRun()
     STATE.towerRuns=STATE.towerRuns+1
     STATE.lastTower=string.format("Exited after %ds, +%d stones; %d tickets",math.floor(os.clock()-start),STATE.stones-stones0,STATE.tickets)
     note(STATE.lastTower)
+    STATE.towerStatus="Đã về; còn "..STATE.tickets.." vé"
+    alert("tower-complete","Đã xong lượt tháp; còn "..STATE.tickets.." vé."..(STATE.tickets<=CONFIG.towerKeep and " Đã chạm mức dừng theo vé." or " Sẽ tiếp tục nếu Chạy tháp còn bật."),2)
+    if STATE.tickets<=0 then alert("tower-no-ticket","Hết vé tháp! Bật Nhận vé hằng ngày hoặc kiếm thêm vé để chạy tiếp.") end
 end
 
 --------------------------------------------------------------------------------
@@ -1284,7 +1313,7 @@ end
 local function bossEntryHold()
     if plr:GetAttribute("Dungeoning") then return false end
     return CONFIG.autoWorldBoss and bossAvailable and
-        (atWorldBoss() or os.clock()<bossPendingUntil or bossAttempts<3)
+        (atWorldBoss() or os.clock()<bossPendingUntil)
 end
 local function worldBossEntryPass()
     if not CONFIG.autoWorldBoss or GEN~=_G.__LOOTTOFORGE then return end
@@ -1367,6 +1396,10 @@ function API.set(k,v)
     if CONFIG[k]==nil then return false end
     if k=="killaura" then STATE.bossAuraStatus=nil end
     if k=="autoWorldBoss" then bossAttempts=0;bossRetryAt=0;bossPendingUntil=0 end
+    if k=="tower" then
+        nextAllowed.towerRun=0
+        for _,key in ipairs({"tower-no-ticket","tower-reserve","tower-rebirth"}) do alertTimes[key]=nil end
+    end
     if k=="auto" and not v then API.stop() else CONFIG[k]=v end
     if k=="stage" then farmStage=nil end
     if v==true and (k=="farm" or k=="tower" or k=="train") then
@@ -1394,9 +1427,16 @@ local function run(name,args,feature,isAuto)
     unpin()
     if name=="stageRun" and not ok and not STATE.pickupBlocked and not plr:GetAttribute("Dungeoning") then pcall(function() exitBE:Fire(true) end) end
     STATE.busy=false; currentFeature=nil; automatic=false; STATE.phase="idle"
-    if name=="towerRun" then nextAllowed[name]=os.clock()+(ok and 0.75 or 5) end
+    if name=="towerRun" then nextAllowed[name]=os.clock()+(ok and (STATE.towerBlocked and 20 or 0.75) or 5) end
     if not ok then
         note(tostring(err))
+        if tostring(err)~="Stopped" then
+            local message=tostring(err)
+            if name=="towerRun" and message:find("Tower entry refused",1,true) then message="Game chưa cho vào tháp. HUB sẽ thử lại; xem vé và điều kiện vào."
+            elseif name=="towerRun" and message:find("Character died",1,true) then message="Nhân vật chết trong tháp. Chờ hồi sinh; không tự mua Revive."
+            end
+            alert("task-error-"..name,message)
+        end
         if tostring(err)~="Stopped" then nextAllowed[name]=os.clock()+5 end
         if name=="stageRun" and tostring(err):find("Back chưa",1,true) then CONFIG.auto=false end
     end
@@ -1448,8 +1488,8 @@ task.spawn(function()
             end
             if CONFIG.auto then
                 -- Alternate body work so farm and tower cannot starve one another.
-                if CONFIG.farm and not plr:GetAttribute("Dungeoning") and os.clock()>=(nextAllowed.stageRun or 0) then run("stageRun",nil,"farm",true) end
                 if CONFIG.auto and CONFIG.tower and os.clock()>=(nextAllowed.towerRun or 0) then run("towerRun",nil,"tower",true) end
+                if CONFIG.auto and CONFIG.farm and not plr:GetAttribute("Dungeoning") and os.clock()>=(nextAllowed.stageRun or 0) then run("stageRun",nil,"farm",true) end
                 if CONFIG.auto and CONFIG.train and not CONFIG.farm and not plr:GetAttribute("Dungeoning") then run("trainPass",table.pack(CONFIG.trainSecs),"train",true) end
             end
         elseif not STATE.busy then
@@ -1555,7 +1595,7 @@ end
 setPalette("Tím ngọc")
 Window=Luna:CreateWindow({
     Name="Đăng Răng To HUB",
-    Subtitle="+1 Loot To Forge · V7.7",
+    Subtitle="+1 Loot To Forge · V7.9",
     LogoID="6031097225",
     LoadingEnabled=false,
     LoadingTitle="Đăng Răng To HUB",
@@ -1677,6 +1717,7 @@ local tower=tab("Tháp băng","ac_unit")
 tower:CreateSection("World Boss")
 toggle(tower,"Tự vào khi World Boss xuất hiện","autoWorldBoss","Bật riêng với Auto tổng. Theo dõi boss xuất hiện hoặc boss đã tải; chờ lượt farm/tháp hiện tại xong rồi gửi yêu cầu vào. Tối đa 3 lần mỗi đợt boss.")
 tower:CreateSection("Tháp băng")
+local towerStatus=tower:CreateParagraph({Title="Trạng thái tháp",Text="Chưa bật. Kiểm tra còn vé và mức vé giữ lại."})
 tower:CreateParagraph({Title="Lặp theo số vé",Text="Cần rebirth 2. Hết lượt sẽ kiểm tra vé để chạy tiếp. Nếu bật cả farm và tháp, các lượt sẽ chạy lần lượt."})
 toggle(tower,"Chạy tháp liên tục","tower")
 toggle(tower,"Nhận vé hằng ngày","dailyTicket")
@@ -1718,6 +1759,8 @@ connect(player.CharacterAdded,function(character)
     if alive and h and speed then speed.original=h.WalkSpeed; h.WalkSpeed=speed.value end
 end)
 local settings=tab("Giao diện & nhật ký","settings")
+local alertsEnabled=true
+settings:CreateToggle({Name="Thông báo tác vụ",CurrentValue=true,Description="Hết vé, mức vé giữ lại, điều kiện vào, hoàn thành lượt và lỗi. Giới hạn thông báo lặp.",Callback=function(value) alertsEnabled=value end})
 Window.Settings=settings
 settings:CreateDropdown({Name="Màu giao diện",Options={"Tím ngọc","Hoàng hôn","Băng xanh"},CurrentOption={"Tím ngọc"},MultipleOptions=false,Callback=function(values)
     local value=type(values)=="table" and values[1] or values; setPalette(value)
@@ -1748,6 +1791,7 @@ local function short(n)
 end
 task.spawn(function()
     local lastLive,lastStats,lastLog
+    local lastAlertID=0
     while alive do
         local ok,err=pcall(function()
             synced=true
@@ -1765,6 +1809,13 @@ task.spawn(function()
             local logText=engineMessage
             if api then
                 local s=api.STATE
+                for _,entry in ipairs(s.alerts or {}) do
+                    if entry.id>lastAlertID then
+                        lastAlertID=entry.id
+                        if alertsEnabled then notify(entry.text) end
+                    end
+                end
+                towerStatus:Set({Text=(s.towerStatus or "Chưa có lượt tháp").."\nAuto tổng: "..tostring(api.CONFIG.auto).." · Chạy tháp: "..tostring(api.CONFIG.tower).."\nVé: "..s.tickets.." · Giữ lại: "..api.CONFIG.towerKeep})
                 liveText=(s.busy and "ĐANG CHẠY · " or "SẴN SÀNG · ")..s.phase.."\n"..s.note
                 local minutes=math.max((os.clock()-s.startedAt)/60,1/60)
                 statsText=string.format("Level %s  ·  Rebirth %s  ·  Coins %s\nQuặng %s  ·  Vé %s  ·  Đá %s\nFarm %d lượt  ·  +%d quặng  ·  %.1f quặng/phút\nNhặt %.2fs  ·  Back %.2fs  ·  Tháp thoát %d lượt\n%s",short(s.level),s.rebirth,short(s.coin),s.ore,s.tickets,s.stones,s.runs,s.oreGot,s.oreGot/minutes,s.pickupSecs,s.backSecs,s.towerRuns,s.lastRun)
@@ -1799,6 +1850,8 @@ else
         if _G.__LTF_HUB_V6 and _G.__LTF_HUB_V6.destroy then _G.__LTF_HUB_V6.destroy() end
     end)
 end
+
+
 
 
 
